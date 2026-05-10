@@ -50,6 +50,41 @@ These are load-bearing and the agent must not silently change them:
    The extension must not link the daemon's library; it talks JSON
    over sockets.
 
+7. **Deny markers and escape events are a versioned contract between
+   the daemon and the extension.** The `X-Pi-Firewall-Status` header
+   value (and the `kind` field of events on the events stream) are
+   enumerated, not free-form. The extension switches on them to choose
+   UX (prompt vs. hard-fail vs. red-alert). Adding a new value requires
+   updating both `proxy.rs`/`honeypot.rs` and `extension/index.ts` in
+   lockstep. See "Deny marker taxonomy" below.
+
+## Deny marker taxonomy
+
+The daemon never returns a generic 403. Every denial is tagged with a
+machine-readable cause so the extension can pick the right UX — there is a
+big difference between "this host isn't allowlisted yet, prompt me" and
+"a process tried to bypass the proxy, alert me."
+
+**In-band markers** (returned in the 403 `X-Pi-Firewall-Status` header):
+
+| Marker                     | Cause                          | Extension UX                                      |
+|----------------------------|--------------------------------|---------------------------------------------------|
+| `denied-unknown-host`      | host:port not in allowlist     | prompt user: "allow once / always / deny"         |
+| `denied-non-https`         | port ≠ 443                     | hard-fail with explanation; not allowlistable     |
+| `denied-malformed-request` | unparseable CONNECT line       | hard-fail; likely a client bug                    |
+
+**Out-of-band events** (delivered via the daemon's events stream — the
+proxy never sees these connections, so a 403 is impossible):
+
+| Event              | Cause                                                            | Extension UX                                                       |
+|--------------------|------------------------------------------------------------------|--------------------------------------------------------------------|
+| `escape-attempt`   | process bypassed the proxy entirely; caught by the Phase 8.5 honeypot | red-alert notification with destination, PID (when resolvable), and dedup count |
+
+Adding a value is a coordinated change. Don't reuse a marker for a
+different cause; don't introduce ad-hoc strings. Old markers are kept
+indefinitely once shipped — the extension may run an older version
+than the daemon during upgrades.
+
 ## Phase 0 — environment sanity
 
 Before touching code, verify the toolchain.
@@ -336,6 +371,186 @@ https://example.com` from inside the bwrap jail fails with
 real NixOS machine. The agent must not try to install nftables rules
 from inside any container or test environment — those rules apply to
 the host kernel and are dangerous to mess with from automated tooling.
+
+## Phase 8.5 — escape detection and honeypot
+
+Phase 8 makes the firewall actually a firewall. Phase 8.5 makes it
+*observable*: when a tool inside the jail bypasses `HTTPS_PROXY` and
+opens a direct connection, we want to surface that in the pi session so
+the user can distinguish "broken tool" from "misbehaving tool" from
+"compromised tool." Without this, escape attempts produce a silent
+`Connection refused` and the user is in the dark.
+
+The mechanism is a NAT redirect: instead of dropping bypass attempts at
+the kernel, we redirect them to a local honeypot port that the daemon
+binds. The daemon recovers the original destination via
+`SO_ORIGINAL_DST`, logs the event, and emits it on a new events stream
+that the extension subscribes to.
+
+**Architectural anchors specific to this phase:**
+
+- **The honeypot never reads or writes bytes from/to the suspect
+  process.** Accept the connection, recover the destination via
+  `getsockopt(SOL_IP, SO_ORIGINAL_DST)`, emit the event, close the
+  socket. No per-connection buffer allocation, no fingerprinting
+  opportunity, no TLS handshake to forge.
+
+- **Bounded concurrency.** A `tokio::sync::Semaphore` (default 32)
+  caps simultaneous honeypot accepts so a malicious tool can't
+  FD-exhaust the daemon by hammering with connections.
+
+- **Hard 500ms-per-connection timeout** backstops the semaphore and
+  protects against half-open-connection exhaustion.
+
+- **Dedup at the events layer.** Suppress duplicate
+  `(dst_addr, dst_port)` events within a 5-second window so retry
+  storms don't spam the pi session — but include a count in the
+  emitted event so the user knows it wasn't just one attempt.
+
+- **No reverse DNS lookups inside the daemon.** A compromised tool
+  could trigger DNS exfil by hitting many distinct destinations and
+  inducing the daemon to look them up. The event carries the IP only;
+  the extension can enrich with reverse DNS if it wants to, on its
+  own time.
+
+**nftables changes (replace Phase 8's reject with redirect):**
+
+```nix
+networking.nftables.tables.pi-jail-filter = {
+  family = "inet";
+  content = ''
+    chain output {
+      type filter hook output priority 0; policy accept;
+      meta skuid 5555 ip  daddr 127.0.0.1 tcp dport { 8118, 8119 } accept
+      meta skuid 5555 ip6 daddr ::1       tcp dport { 8118, 8119 } accept
+      meta skuid 5555 oifname "lo" accept
+      meta skuid 5555 reject with icmpx type admin-prohibited
+    }
+  '';
+};
+networking.nftables.tables.pi-jail-nat = {
+  family = "ip";
+  content = ''
+    chain output {
+      type nat hook output priority -100; policy accept;
+      meta skuid 5555 ip daddr 127.0.0.1 return
+      meta skuid 5555 oifname "lo" return
+      meta skuid 5555 tcp redirect to :8119
+    }
+  '';
+};
+```
+
+The NAT chain runs at priority -100 (before the filter at 0). For UID
+5555 traffic that isn't to localhost or the loopback interface, the
+destination is rewritten to `127.0.0.1:8119` and the original is
+preserved in conntrack for `SO_ORIGINAL_DST`. The filter chain then
+sees a packet to `127.0.0.1:8119`, which it accepts. UID-5555 traffic
+that bypasses TCP entirely (UDP, ICMP, raw sockets — including
+potential HTTP/3 / QUIC) doesn't match the redirect rule and falls
+through to the explicit reject in the filter chain.
+
+A symmetric `family = "ip6"` NAT table is needed for v6 coverage.
+Initial implementation can ship v4-only and add v6 once the v4 path
+is verified.
+
+**Daemon changes:**
+
+- New `src/honeypot.rs` module — third tokio task, listens on
+  `127.0.0.1:8119`. Per-connection logic:
+  1. Try to acquire a semaphore permit. If full, close immediately.
+  2. `getsockopt(IPPROTO_IP, SO_ORIGINAL_DST)` to recover the
+     destination. The `socket2` or `nix` crate is fine for the FFI;
+     don't roll our own.
+  3. Run the event through the dedup window.
+  4. If novel, emit on the events stream.
+  5. Close the socket. Do not read.
+
+- New events stream. JSON lines, one per event:
+
+  ```json
+  {"ts":"2026-05-10T22:00:00Z","kind":"escape-attempt","host":"1.2.3.4","port":443,"count":1}
+  ```
+
+  Easiest implementation: a `subscribe_events` command on the existing
+  mgmt socket that switches the connection into "stream mode" — the
+  daemon writes events as they happen, the client reads. Alternative
+  is a separate `pi-firewall.events.sock`. Pick the one that fits the
+  mgmt protocol cleaner once it's concrete.
+
+**Extension changes:**
+
+- Subscribe to the events stream on init; keep the connection open for
+  the life of the pi session.
+- Render `escape-attempt` events as a red-alert notification. Sample:
+
+  > ⚠️ **Bypass attempt blocked.** A process inside the jail tried
+  > to connect directly to `1.2.3.4:443`, ignoring `HTTPS_PROXY`. The
+  > kernel redirected it to the honeypot. Likely cause: the tool
+  > doesn't respect proxy env vars. If you didn't expect any tool to
+  > reach this destination, treat it as suspicious and inspect the
+  > running processes.
+
+**Threat model for the honeypot:**
+
+The honeypot accepts arbitrary bytes from a process that has already
+demonstrated it ignores our policy. Attack surface analysis:
+
+1. *Connection-flood DoS:* mitigated by the semaphore cap (32 concurrent
+   accepts). Excess connections return immediately at the OS level.
+
+2. *Slowloris / half-open exhaustion:* mitigated by the 500ms hard
+   timeout. A connection that lingers past that gets dropped.
+
+3. *Bytes-in attacks:* we never call `read()`, so the suspect process
+   can send all the bytes it wants — they sit in the kernel receive
+   buffer and get discarded when we close. No parser to confuse, no
+   buffer to overflow.
+
+4. *Bytes-out / fingerprinting:* we never call `write()`. The suspect
+   process sees a TCP connection that closes immediately with no data.
+   This is observable but not informative.
+
+5. *PID resolution races:* deferred to a follow-up phase. Walking
+   `/proc/net/tcp` plus `/proc/<pid>/fd` to map src-port → PID is slow
+   (~10ms) and racy (process may exit before we look). Initial
+   implementation reports destination only.
+
+6. *Compromise of the daemon process itself:* bounded by the systemd
+   hardening from Phase 6 (`NoNewPrivileges`, `ProtectSystem`,
+   `MemoryDenyWriteExecute`, etc.). The daemon never holds elevated
+   privileges; the worst-case is loss of allowlist integrity, not host
+   compromise.
+
+What we explicitly do **not** defend against:
+
+- A process inside the jail that escalates to root via a kernel
+  vulnerability. That's the kernel's problem, and our nftables UID
+  rule still applies regardless.
+- Side-channel inference of the allowlist via timing of
+  `denied-unknown-host` responses. Real but not interesting for a
+  personal-machine threat model.
+
+**Tasks:**
+- Update the Phase 7 NixOS module with the redirect rules above.
+- Add `src/honeypot.rs` and wire it as a third `tokio::spawn` in
+  `main.rs`.
+- Add the events stream to the mgmt protocol (or a new socket).
+- Implement dedup with a `HashMap<(IpAddr, u16), Instant>` and 5s
+  expiry.
+- Update `extension/index.ts` to subscribe and render escape events.
+- Document the new behavior in the README.
+
+**Done when:** with the rules active and the daemon running, a
+non-cooperating tool inside the jail (test with
+`unset HTTPS_PROXY && curl -v https://example.com`) produces an
+`escape-attempt` event in the pi session that names the destination.
+A burst of rapid retries to the same destination collapses into a
+single event with a count.
+
+**Human checkpoint:** the user must verify this from their real
+machine, like Phase 8. The agent must not install nftables rules from
+a container or test environment.
 
 ## Phase 9 — observability and audit log
 
