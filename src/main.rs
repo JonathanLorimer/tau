@@ -1,57 +1,40 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use clap::Parser;
 
 mod allowlist;
+mod cmd;
 mod mgmt;
+mod paths;
 mod proxy;
 
-use allowlist::Allowlist;
+/// Personal coding harness for pi: firewall daemon, sandbox launcher, and CLI.
+#[derive(Parser)]
+#[command(name = "tau", version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("pi_firewall=info".parse().unwrap()),
-        )
-        .init();
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Run the firewall daemon (HTTPS proxy + management socket).
+    Serve(cmd::serve::Args),
+    /// Launch pi inside a bwrap sandbox routed through the firewall.
+    Jail(cmd::jail::Args),
+    /// Interact with a running tau daemon.
+    Ctl(cmd::ctl::Args),
+}
 
-    let config_path = xdg_config_dir().join("allow.json");
-    let socket_path = xdg_runtime_dir().join("pi-firewall.sock");
-
-    let allowlist = match Allowlist::load(&config_path) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("fatal: could not load allowlist from {}: {e}", config_path.display());
-            std::process::exit(1);
-        }
-    };
-
-    let allowlist = Arc::new(RwLock::new(allowlist));
-
-    tokio::select! {
-        res = proxy::run(allowlist.clone()) => {
-            tracing::error!("proxy exited: {res:?}");
-        }
-        res = mgmt::run(&socket_path, allowlist) => {
-            tracing::error!("mgmt exited: {res:?}");
-        }
+fn main() -> std::io::Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Serve(args) => with_tokio(cmd::serve::run(args)),
+        Command::Jail(args) => cmd::jail::run(args),
+        Command::Ctl(args) => with_tokio(cmd::ctl::run(args)),
     }
-    std::process::exit(1);
 }
 
-fn xdg_config_dir() -> PathBuf {
-    std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").expect("HOME not set")).join(".config")
-        })
-        .join("pi-firewall")
-}
-
-fn xdg_runtime_dir() -> PathBuf {
-    std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+fn with_tokio<F: std::future::Future<Output = std::io::Result<()>>>(
+    fut: F,
+) -> std::io::Result<()> {
+    tokio::runtime::Runtime::new()?.block_on(fut)
 }

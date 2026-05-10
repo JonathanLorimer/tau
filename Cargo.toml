@@ -1,11 +1,7 @@
 [package]
-name = "pi-firewall"
+name = "tau"
 version = "0.1.0"
 edition = "2021"
-
-[[bin]]
-name = "pi-firewall"
-path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -13,3 +9,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }

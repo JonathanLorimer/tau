@@ -8,9 +8,9 @@ use tokio::sync::RwLock;
 
 use crate::allowlist::{Allowlist, Entry};
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
-enum Command {
+pub enum Command {
     List,
     AddSession { host: String, port: u16 },
     AddPersist { host: String, port: u16 },
@@ -19,9 +19,12 @@ enum Command {
 
 // Untagged so replies serialize as plain JSON objects. Do not add a serde tag
 // without updating the corresponding TypeScript types in extension/index.ts.
-#[derive(Serialize)]
+// Variant order matters for deserialization: Entries (more fields) must come
+// before Simple, otherwise serde will match {"ok":true,"entries":[]} as Simple
+// and silently drop the entries.
+#[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum Reply {
+pub enum Reply {
     Entries { ok: bool, entries: Vec<Entry> },
     Simple { ok: bool },
 }
