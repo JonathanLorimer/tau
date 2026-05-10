@@ -6,7 +6,24 @@ use tokio::sync::RwLock;
 
 use crate::allowlist::Allowlist;
 
-const DENIED: &[u8] = b"HTTP/1.1 403 Forbidden\r\nX-Pi-Firewall-Status: denied-unknown-host\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+// Deny markers per PLAN.md "Deny marker taxonomy". The marker is the contract
+// between the daemon and the extension; renaming or repurposing one of these
+// is a coordinated change with extension/index.ts.
+macro_rules! deny_response {
+    ($marker:literal) => {
+        concat!(
+            "HTTP/1.1 403 Forbidden\r\n",
+            "X-Pi-Firewall-Status: ", $marker, "\r\n",
+            "Content-Length: 0\r\n",
+            "Connection: close\r\n",
+            "\r\n"
+        ).as_bytes()
+    };
+}
+
+const DENIED_UNKNOWN_HOST: &[u8] = deny_response!("denied-unknown-host");
+const DENIED_NON_HTTPS: &[u8] = deny_response!("denied-non-https");
+const DENIED_MALFORMED_REQUEST: &[u8] = deny_response!("denied-malformed-request");
 const CONNECTED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 
 pub async fn run(allowlist: Arc<RwLock<Allowlist>>) -> std::io::Result<()> {
@@ -51,20 +68,20 @@ async fn handle(socket: TcpStream, allowlist: Arc<RwLock<Allowlist>>) -> std::io
 
     let Some((host, port)) = parse_authority(&request_line) else {
         tracing::warn!("unparseable request: {:?}", request_line.trim());
-        write_half.write_all(DENIED).await?;
+        write_half.write_all(DENIED_MALFORMED_REQUEST).await?;
         return Ok(());
     };
 
     // Architectural anchor: HTTPS only — plain HTTP is rejected
     if port != 443 {
         tracing::warn!(%host, port, "rejected non-HTTPS port");
-        write_half.write_all(DENIED).await?;
+        write_half.write_all(DENIED_NON_HTTPS).await?;
         return Ok(());
     }
 
     if !allowlist.read().await.check(&host, port) {
         tracing::info!(%host, port, "denied");
-        write_half.write_all(DENIED).await?;
+        write_half.write_all(DENIED_UNKNOWN_HOST).await?;
         return Ok(());
     }
 
