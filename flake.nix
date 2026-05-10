@@ -28,6 +28,10 @@
           rust = pkgs.rust-bin.stable.latest.default;
         });
   in {
+    packages = forAllSystems ({pkgs, ...}: {
+      pi = pkgs.callPackage ./nix/pi.nix {};
+    });
+
     devShells = forAllSystems ({
       pkgs,
       rust,
