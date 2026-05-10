@@ -2,6 +2,8 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::paths;
+
 // Load-bearing: the Phase 8 nftables rule keys on this exact UID.
 // Changing one without the other breaks enforcement.
 const JAIL_UID: u32 = 5555;
@@ -9,6 +11,78 @@ const JAIL_GID: u32 = 5555;
 
 const PROXY_URL: &str = "http://127.0.0.1:8118";
 const NO_PROXY_LIST: &str = "localhost,127.0.0.1,::1";
+
+// Env vars we set inside the jail to specific values, regardless of the host.
+// Applied last so they override anything inherited.
+const ALWAYS_FORCE: &[(&str, &str)] = &[
+    ("HTTPS_PROXY", PROXY_URL),
+    ("https_proxy", PROXY_URL),
+    ("NO_PROXY", NO_PROXY_LIST),
+    ("no_proxy", NO_PROXY_LIST),
+];
+
+// Curated set of env vars we copy through from the host if present. A pattern
+// ending in '*' is a prefix match; everything else is a literal name. Users
+// can extend this list via ~/.config/tau/jail.env or `--inherit-env`.
+const INHERIT_DEFAULT: &[&str] = &[
+    // Core
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    // Terminal sizing / type
+    "TERM",
+    "COLUMNS",
+    "LINES",
+    // Locale
+    "LANG",
+    "LC_*",
+    // Time
+    "TZ",
+    // Editor / pager preferences
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    // TLS bundles
+    "NIX_SSL_CERT_FILE",
+    "SSL_CERT_FILE",
+    // Git identity
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    // LLM provider keys
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    // Source-forge tokens
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    // Package registry tokens
+    "NPM_TOKEN",
+    "CARGO_REGISTRY_TOKEN",
+    "CARGO_REGISTRIES_*_TOKEN",
+];
+
+// Never inherit these, even if the user lists them. They'd either give the
+// jail access to host credentials/sessions or defeat the sandbox itself.
+const INHERIT_DENY: &[&str] = &[
+    // Credential agents
+    "SSH_AUTH_SOCK",
+    "GPG_AGENT_INFO",
+    "GNUPGHOME",
+    // Sandbox-defeating loader knobs
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "DYLD_*",
+    // GUI / session access
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    // sudo metadata
+    "SUDO_*",
+];
 
 /// Launch pi inside a bwrap sandbox routed through the firewall.
 ///
@@ -26,6 +100,12 @@ pub struct Args {
     /// location). Created if it doesn't exist.
     #[arg(long, env = "PI_AUTH_DIR", value_name = "DIR")]
     auth_dir: Option<PathBuf>,
+
+    /// Additional env-var names to inherit (literal or NAME_* patterns).
+    /// Comma-separated; the flag may repeat. Adds to the curated default set
+    /// and to entries from ~/.config/tau/jail.env. The denylist always wins.
+    #[arg(long, value_name = "LIST", value_delimiter = ',')]
+    inherit_env: Vec<String>,
 
     /// Arguments forwarded to pi.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -79,29 +159,33 @@ pub fn run(args: Args) -> std::io::Result<()> {
     cmd.args(["--uid", &uid]); // run as uid 5555 inside (matches the Phase 8 nftables rule)
     cmd.args(["--gid", &gid]); // and gid 5555
 
-    let path = std::env::var("PATH").unwrap_or_default();
-    let user = std::env::var("USER").unwrap_or_default();
-    let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".into());
-    let lang = std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into());
-    let nix_cert = std::env::var("NIX_SSL_CERT_FILE").unwrap_or_default();
-    let ssl_cert = std::env::var("SSL_CERT_FILE").unwrap_or_default();
+    // Build the inherit allowlist: defaults + ~/.config/tau/jail.env + --inherit-env.
+    // Denylist always wins; entries it covers are dropped even if the user added them.
+    let mut allowlist: Vec<String> = INHERIT_DEFAULT.iter().map(|s| (*s).to_string()).collect();
+    allowlist.extend(load_inherit_file()?);
+    allowlist.extend(args.inherit_env);
 
-    // Re-establish only the env vars we actually want inside the jail.
-    // Everything else was just dropped by --clearenv. The HTTPS_PROXY pair is
-    // what makes cooperating clients route through the firewall at all.
-    for (k, v) in [
-        ("PATH", path.as_str()),                  // exec lookup path — pi inherits the host PATH
-        ("HOME", home.as_str()),                  // points at the tmpfs we mount below
-        ("USER", user.as_str()),                  // tools like git read this for default config
-        ("TERM", term.as_str()),                  // terminal type — pi's UI depends on this
-        ("LANG", lang.as_str()),                  // locale; affects character encoding
-        ("NIX_SSL_CERT_FILE", nix_cert.as_str()), // CA bundle path on NixOS
-        ("SSL_CERT_FILE", ssl_cert.as_str()),     // CA bundle path on other distros
-        ("HTTPS_PROXY", PROXY_URL),               // route HTTPS through the firewall (uppercase)
-        ("https_proxy", PROXY_URL),               // …and lowercase, since some libs only check this
-        ("NO_PROXY", NO_PROXY_LIST),              // skip the proxy for localhost (avoid loops)
-        ("no_proxy", NO_PROXY_LIST),              // …and lowercase
-    ] {
+    for (k, v) in std::env::vars() {
+        if matches_any(&k, INHERIT_DENY) {
+            continue;
+        }
+        if !matches_any(&k, &allowlist) {
+            continue;
+        }
+        cmd.args(["--setenv", &k, &v]);
+    }
+
+    // Sane fallbacks for vars that tools commonly require but users sometimes
+    // don't have set in their shell env.
+    if std::env::var("TERM").is_err() {
+        cmd.args(["--setenv", "TERM", "xterm"]);
+    }
+    if std::env::var("LANG").is_err() {
+        cmd.args(["--setenv", "LANG", "C.UTF-8"]);
+    }
+
+    // Forced overrides go last so they win over anything inherited or fallback'd.
+    for (k, v) in ALWAYS_FORCE {
         cmd.args(["--setenv", k, v]);
     }
 
@@ -154,4 +238,72 @@ fn which_pi() -> std::io::Result<PathBuf> {
         }
     }
     Err(io_error("'pi' not found on PATH"))
+}
+
+/// Read additional inherit-allowlist entries from ~/.config/tau/jail.env.
+/// Format: one pattern per line; '#' starts a comment; blank lines OK.
+/// Returns an empty list if the file doesn't exist.
+fn load_inherit_file() -> std::io::Result<Vec<String>> {
+    let path = paths::config_dir().join("jail.env");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut entries = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.split('#').next().unwrap_or("").trim();
+        if !trimmed.is_empty() {
+            entries.push(trimmed.to_string());
+        }
+    }
+    Ok(entries)
+}
+
+fn matches_any<S: AsRef<str>>(name: &str, patterns: &[S]) -> bool {
+    patterns.iter().any(|p| match_pattern(name, p.as_ref()))
+}
+
+/// Match a name against a pattern. A trailing '*' is the only wildcard
+/// (prefix match); anything else is compared literally.
+fn match_pattern(name: &str, pattern: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        name.starts_with(prefix)
+    } else {
+        name == pattern
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_match() {
+        assert!(match_pattern("PATH", "PATH"));
+        assert!(!match_pattern("PATHX", "PATH"));
+        assert!(!match_pattern("path", "PATH"));
+    }
+
+    #[test]
+    fn prefix_match() {
+        assert!(match_pattern("LC_ALL", "LC_*"));
+        assert!(match_pattern("LC_", "LC_*"));
+        assert!(!match_pattern("LANG", "LC_*"));
+        assert!(!match_pattern("XLC_ALL", "LC_*"));
+    }
+
+    #[test]
+    fn star_only_matches_everything() {
+        assert!(match_pattern("anything", "*"));
+        assert!(match_pattern("", "*"));
+    }
+
+    #[test]
+    fn deny_wins() {
+        // Even though the user added it, SSH_AUTH_SOCK is in the deny list.
+        let allowed: Vec<String> = vec!["SSH_AUTH_SOCK".into()];
+        assert!(matches_any("SSH_AUTH_SOCK", &allowed));
+        assert!(matches_any("SSH_AUTH_SOCK", INHERIT_DENY));
+    }
 }
