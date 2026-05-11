@@ -135,16 +135,26 @@ Done — the foundation is in place:
   `packages.${system}.tau`, also set as `packages.${system}.default`).
   Two-step build: `buildDepsOnly` caches the dep tree, `buildPackage`
   links our source.
+- ✅ Phase 6 — systemd user service. Folded into the home-manager module
+  rather than shipped as a standalone .service file. Hardening directives
+  match PLAN.md Phase 6 (NoNewPrivileges, ProtectSystem=strict,
+  ProtectHome=read-only with ReadWritePaths=~/.config/tau, etc.).
+- ✅ Phase 7 — flake outputs complete:
+  - `homeManagerModules.default` (`nix/home-manager.nix`) installs tau +
+    pi, symlinks the extension into `~/.pi/agent/extensions/tau`, runs
+    `tau serve` as a systemd user service. Granular toggles
+    (`installPi`, `installExtension`, `service.enable`).
+  - `nixosModules.default` (`nix/nixos.nix`) installs bubblewrap at the
+    system level, enables `security.unprivilegedUsernsClone`, and exposes
+    `programs.tau.enforce` as a stub for the Phase 8 nftables rule (emits
+    a warning today since the rule isn't implemented yet).
+  - `nix/systemd-unit.nix` extracted from `home-manager.nix` so the unit
+    definition is reusable.
 
 TODO — in roughly the right order:
 
-- ⬜ Phase 6 — systemd user service for `tau serve` (probably written
-  as part of Phase 7's home-manager module)
-- ⬜ Phase 7 (remaining) — `homeManagerModules.default` and
-  `nixosModules.default`. Tau, pi, and the extension are all packaged;
-  the modules just need to wire them up (PATH install, systemd unit,
-  extension symlink, nftables option).
-- ⬜ Phase 8 — nftables enforcement
+- ⬜ Phase 8 — nftables enforcement (fills in the stubbed rule body in
+  `nix/nixos.nix` when `programs.tau.enforce = true`)
 - ⬜ Phase 8.5 — honeypot + events stream
 - ⬜ Phase 9 — audit log
 - ⬜ Phase 10 — defense-in-depth (optional)

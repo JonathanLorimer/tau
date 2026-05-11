@@ -45,6 +45,18 @@
       tau-extension = pkgs.callPackage ./nix/extension.nix {};
     });
 
+    homeManagerModules.default = {pkgs, ...}: {
+      imports = [./nix/home-manager.nix];
+      # Inject our flake's packages so the module can default the
+      # tau/pi/tau-extension package options to them without each user's
+      # config having to know the flake's output names.
+      _module.args.tauPackages = self.packages.${pkgs.system};
+    };
+
+    # System-level prerequisites: bubblewrap, kernel knobs for the jail,
+    # and (Phase 8) the nftables enforcement rule.
+    nixosModules.default = ./nix/nixos.nix;
+
     devShells = forAllSystems ({
       pkgs,
       rust,
