@@ -20,12 +20,14 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Semaphore, broadcast};
 use tokio::time::timeout;
+
+use crate::util::iso_timestamp;
 
 /// Coalescing window: a second attempt to the same `(ip, port)` within this
 /// interval is counted but not emitted as its own event. The next emission
@@ -210,30 +212,6 @@ fn so_original_dst(_sock: &TcpStream) -> io::Result<SocketAddr> {
     ))
 }
 
-/// RFC 3339 UTC timestamp with second precision. We format manually via
-/// `gmtime_r` to avoid a chrono/time-crate dependency; second precision is
-/// enough for an audit event of this kind.
-fn iso_timestamp() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let r = unsafe { libc::gmtime_r(&secs, &mut tm) };
-    if r.is_null() {
-        return String::from("1970-01-01T00:00:00Z");
-    }
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min,
-        tm.tm_sec,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,14 +244,5 @@ mod tests {
         let b = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
         assert_eq!(update_dedup(&d, a, 443).await, Some(1));
         assert_eq!(update_dedup(&d, b, 443).await, Some(1));
-    }
-
-    #[test]
-    fn iso_timestamp_has_expected_shape() {
-        let ts = iso_timestamp();
-        assert_eq!(ts.len(), 20, "got: {ts}");
-        assert!(ts.ends_with('Z'), "got: {ts}");
-        assert_eq!(&ts[4..5], "-");
-        assert_eq!(&ts[10..11], "T");
     }
 }

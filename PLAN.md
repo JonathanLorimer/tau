@@ -182,9 +182,31 @@ Done — the foundation is in place:
     and no-subscriber survival. Three new unit tests cover dedup
     semantics. All 26 tests pass under `cargo test`.
 
+- ✅ Phase 9 — audit log.
+  - New `cli/src/audit.rs`: `AuditRecord { ts, host?, port?, decision,
+    reason, peer? }`, a clonable `Audit` wrapper over an
+    `Option<mpsc::UnboundedSender>` (no-op when disabled), and a
+    single-writer task that opens the file with `O_APPEND | O_CREAT`
+    and serializes one NDJSON record per CONNECT decision. Fsync
+    omitted on purpose — page cache is enough for this trail.
+  - New `--audit-log <PATH>` flag (also `TAU_AUDIT_LOG`); when unset
+    the writer task is replaced by a never-completing future so
+    `tokio::select!` keeps the other listeners alive.
+  - `Allowlist::classify` reports which set (`persistent` vs `session`)
+    matched, so the audit reason field distinguishes them.
+  - Proxy decision sites all emit: `unknown-host`, `non-https`,
+    `malformed-request` (only for non-empty unparseable input — TCP
+    port probes are intentionally skipped), and allows tagged with
+    the matching `Source`.
+  - Shared `cli/src/util.rs::iso_timestamp` extracted from `honeypot.rs`
+    so audit + honeypot share the RFC 3339 formatter.
+  - Tests: `audit_log_records_all_decision_paths` drives every reason
+    once and asserts the multiset matches `{persistent|session,
+    malformed-request, non-https, unknown-host}`. `audit_log_off_by_default`
+    exercises the disabled path.
+
 TODO — in roughly the right order:
 
-- ⬜ Phase 9 — audit log
 - ⬜ Phase 10 — defense-in-depth (optional)
 
 ## Phase 0 — environment sanity

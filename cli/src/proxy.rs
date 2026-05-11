@@ -6,6 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
 use crate::allowlist::Allowlist;
+use crate::audit::{self, Audit};
 
 // Deny markers per PLAN.md "Deny marker taxonomy". The marker is the contract
 // between the daemon and the extension; renaming or repurposing one of these
@@ -27,15 +28,20 @@ const DENIED_NON_HTTPS: &[u8] = deny_response!("denied-non-https");
 const DENIED_MALFORMED_REQUEST: &[u8] = deny_response!("denied-malformed-request");
 const CONNECTED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 
-pub async fn run(addr: SocketAddr, allowlist: Arc<RwLock<Allowlist>>) -> std::io::Result<()> {
+pub async fn run(
+    addr: SocketAddr,
+    allowlist: Arc<RwLock<Allowlist>>,
+    audit: Audit,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("proxy listening on {addr}");
     loop {
         match listener.accept().await {
             Ok((socket, peer)) => {
                 let allowlist = allowlist.clone();
+                let audit = audit.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle(socket, allowlist).await {
+                    if let Err(e) = handle(socket, peer, allowlist, audit).await {
                         tracing::debug!(%peer, "connection closed: {e}");
                     }
                 });
@@ -45,7 +51,12 @@ pub async fn run(addr: SocketAddr, allowlist: Arc<RwLock<Allowlist>>) -> std::io
     }
 }
 
-async fn handle(socket: TcpStream, allowlist: Arc<RwLock<Allowlist>>) -> std::io::Result<()> {
+async fn handle(
+    socket: TcpStream,
+    peer: SocketAddr,
+    allowlist: Arc<RwLock<Allowlist>>,
+    audit: Audit,
+) -> std::io::Result<()> {
     let (read_half, mut write_half) = socket.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -68,25 +79,38 @@ async fn handle(socket: TcpStream, allowlist: Arc<RwLock<Allowlist>>) -> std::io
     let read_half = reader.into_inner();
 
     let Some((host, port)) = parse_authority(&request_line) else {
-        tracing::warn!("unparseable request: {:?}", request_line.trim());
-        write_half.write_all(DENIED_MALFORMED_REQUEST).await?;
+        // Empty input is a bare TCP probe (port-readiness check, healthcheck,
+        // etc.) — not a CONNECT request someone tried and got wrong, so skip
+        // the audit noise. Anything non-empty is a real malformed request.
+        let trimmed = request_line.trim();
+        if trimmed.is_empty() {
+            tracing::debug!(%peer, "empty request; treating as probe");
+        } else {
+            tracing::warn!("unparseable request: {trimmed:?}");
+            audit.record(audit::deny_anonymous(peer, "malformed-request"));
+        }
+        let _ = write_half.write_all(DENIED_MALFORMED_REQUEST).await;
         return Ok(());
     };
 
     // Architectural anchor: HTTPS only — plain HTTP is rejected
     if port != 443 {
         tracing::warn!(%host, port, "rejected non-HTTPS port");
+        audit.record(audit::deny(&host, port, peer, "non-https"));
         write_half.write_all(DENIED_NON_HTTPS).await?;
         return Ok(());
     }
 
-    if !allowlist.read().await.check(&host, port) {
+    let source = allowlist.read().await.classify(&host, port);
+    let Some(source) = source else {
         tracing::info!(%host, port, "denied");
+        audit.record(audit::deny(&host, port, peer, "unknown-host"));
         write_half.write_all(DENIED_UNKNOWN_HOST).await?;
         return Ok(());
-    }
+    };
 
-    tracing::info!(%host, port, "allowed, tunneling");
+    tracing::info!(%host, port, source = source.as_str(), "allowed, tunneling");
+    audit.record(audit::allow(&host, port, peer, source.as_str()));
     write_half.write_all(CONNECTED).await?;
 
     let mut socket = read_half.reunite(write_half).expect("same socket");

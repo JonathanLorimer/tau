@@ -1,11 +1,13 @@
 use clap::Parser;
 
 mod allowlist;
+mod audit;
 mod cmd;
 mod honeypot;
 mod mgmt;
 mod paths;
 mod proxy;
+mod util;
 
 /// Personal coding harness for pi: firewall daemon, sandbox launcher, and CLI.
 #[derive(Parser)]

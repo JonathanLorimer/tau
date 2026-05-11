@@ -15,6 +15,24 @@ pub struct Allowlist {
     path: PathBuf,
 }
 
+/// Which set an allow decision came from. Surfaced in the audit log so a
+/// later sweep can tell "user clicked allow-once during this session" apart
+/// from "user has long-term allowlisted this host".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Persistent,
+    Session,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::Persistent => "persistent",
+            Source::Session => "session",
+        }
+    }
+}
+
 impl Allowlist {
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let persistent = if path.exists() {
@@ -33,9 +51,19 @@ impl Allowlist {
         })
     }
 
-    pub fn check(&self, host: &str, port: u16) -> bool {
+    /// Returns which set (persistent vs session) holds the entry, or
+    /// `None` if neither does. Persistent is checked first: an entry
+    /// promoted from session to persistent (or duplicated across both)
+    /// classifies as `persistent`.
+    pub fn classify(&self, host: &str, port: u16) -> Option<Source> {
         let entry = Entry { host: host.to_owned(), port };
-        self.persistent.contains(&entry) || self.session.contains(&entry)
+        if self.persistent.contains(&entry) {
+            Some(Source::Persistent)
+        } else if self.session.contains(&entry) {
+            Some(Source::Session)
+        } else {
+            None
+        }
     }
 
     pub fn add_session(&mut self, host: String, port: u16) {
