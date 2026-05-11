@@ -113,6 +113,9 @@ Done — the foundation is in place:
 
 - ✅ Phase 0 — toolchain (covered by the dev shell in `flake.nix`)
 - ✅ Phase 1 — daemon compiles, `cargo test` passes, `cargo clippy -D warnings` clean
+- ✅ Phase 2 — daemon integration test as `tests/integration.rs` (10 tests:
+  mgmt protocol, persistence-across-restart, and all three deny markers).
+  `tau serve` gained `--proxy-addr` so tests can use kernel-assigned ports.
 - ✅ Phase 4 — bwrap wrapper, now `tau jail`, with curated env-inheritance
   (allowlist + denylist + user-extensible via `~/.config/tau/jail.env`
   and `--inherit-env`)
@@ -123,9 +126,6 @@ Done — the foundation is in place:
 
 TODO — in roughly the right order:
 
-- ⬜ Phase 2 — daemon integration test (better as Rust `tests/integration.rs`
-  driving the daemon through the public `Command`/`Reply` types, rather
-  than the bash-script approach the original phase sketched)
 - ⬜ Phase 3 — extension type-check
 - ⬜ Phase 6 — systemd user service for `tau serve`
 - ⬜ Phase 7 — `homeManagerModules.default`, `nixosModules.default`,

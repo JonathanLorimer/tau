@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -26,9 +27,9 @@ const DENIED_NON_HTTPS: &[u8] = deny_response!("denied-non-https");
 const DENIED_MALFORMED_REQUEST: &[u8] = deny_response!("denied-malformed-request");
 const CONNECTED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 
-pub async fn run(allowlist: Arc<RwLock<Allowlist>>) -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:8118").await?;
-    tracing::info!("proxy listening on 127.0.0.1:8118");
+pub async fn run(addr: SocketAddr, allowlist: Arc<RwLock<Allowlist>>) -> std::io::Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    tracing::info!("proxy listening on {addr}");
     loop {
         match listener.accept().await {
             Ok((socket, peer)) => {

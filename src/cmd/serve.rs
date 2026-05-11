@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,6 +16,15 @@ pub struct Args {
     /// Path to the management Unix socket.
     #[arg(long, env = "TAU_SOCKET", value_name = "PATH")]
     socket: Option<PathBuf>,
+
+    /// Address the HTTPS CONNECT proxy binds on.
+    #[arg(
+        long,
+        env = "TAU_PROXY_ADDR",
+        value_name = "ADDR",
+        default_value = "127.0.0.1:8118"
+    )]
+    proxy_addr: SocketAddr,
 }
 
 pub async fn run(args: Args) -> std::io::Result<()> {
@@ -27,7 +37,7 @@ pub async fn run(args: Args) -> std::io::Result<()> {
     let allowlist = Arc::new(RwLock::new(allowlist));
 
     tokio::select! {
-        res = proxy::run(allowlist.clone()) => {
+        res = proxy::run(args.proxy_addr, allowlist.clone()) => {
             tracing::error!("proxy exited: {res:?}");
         }
         res = mgmt::run(&socket_path, allowlist) => {
