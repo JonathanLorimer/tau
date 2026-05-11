@@ -217,7 +217,7 @@ interleaving pushed events with command/reply traffic.
     homeConfigurations.user = home-manager.lib.homeManagerConfiguration {
       modules = [
         tau.homeManagerModules.default
-        { programs.tau.enable = true; }
+        { services.tau.enable = true; }
       ];
     };
   };
@@ -226,7 +226,9 @@ interleaving pushed events with command/reply traffic.
 
 ### Module options
 
-`homeManagerModules.default` exposes under `programs.tau`:
+`homeManagerModules.default` exposes under `services.tau` (the main
+thing the user-side module does is run `tau serve` as a systemd user
+unit):
 
 | option              | type     | default                  | purpose                                            |
 |---------------------|----------|--------------------------|----------------------------------------------------|

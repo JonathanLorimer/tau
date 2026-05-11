@@ -10,10 +10,9 @@
 #
 # Naming note: this module lives under `programs.tau`, parallel to
 # `programs.firejail` (also a sandbox-support module that installs a
-# binary and tunes a kernel feature). The same `programs.tau` namespace
-# exists in the HM module; they're separate option trees, so there's no
-# collision — `programs.tau.enable` in NixOS means "install system-level
-# prerequisites," in HM it means "install tau for this user."
+# binary and tunes a kernel feature). The home-manager module is
+# `services.tau` instead, since on the user side the main thing
+# happening is a systemd user unit running `tau serve`.
 {
   config,
   lib,

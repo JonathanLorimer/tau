@@ -4,9 +4,9 @@
   tauPackages,
   ...
 }: let
-  cfg = config.programs.tau;
+  cfg = config.services.tau;
 in {
-  options.programs.tau = {
+  options.services.tau = {
     enable = lib.mkEnableOption "tau personal coding harness";
 
     package = lib.mkOption {
