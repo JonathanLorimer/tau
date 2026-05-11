@@ -28,7 +28,19 @@
           rust = pkgs.rust-bin.stable.latest.default;
         });
   in {
-    packages = forAllSystems ({pkgs, ...}: {
+    packages = forAllSystems ({
+      pkgs,
+      rust,
+      ...
+    }: let
+      craneLib = (crane.mkLib pkgs).overrideToolchain rust;
+      tau = import ./nix/tau.nix {
+        inherit craneLib;
+        inherit (pkgs) lib;
+      };
+    in {
+      inherit tau;
+      default = tau;
       pi = pkgs.callPackage ./nix/pi.nix {};
       tau-extension = pkgs.callPackage ./nix/extension.nix {};
     });

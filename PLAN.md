@@ -131,13 +131,19 @@ Done — the foundation is in place:
 - ✅ Deny marker taxonomy implemented in `proxy.rs` via a `deny_response!`
   macro that composes the three structured 403 responses
 - ✅ pi packaged in Nix (`nix/pi.nix`, exposed as `packages.${system}.pi`)
+- ✅ tau packaged in Nix via crane (`nix/tau.nix`, exposed as
+  `packages.${system}.tau`, also set as `packages.${system}.default`).
+  Two-step build: `buildDepsOnly` caches the dep tree, `buildPackage`
+  links our source.
 
 TODO — in roughly the right order:
 
-- ⬜ Phase 6 — systemd user service for `tau serve`
-- ⬜ Phase 7 — `homeManagerModules.default`, `nixosModules.default`,
-  and `packages.${system}.tau` (Rust binary via crane, mirroring the
-  dactyl flake's pattern)
+- ⬜ Phase 6 — systemd user service for `tau serve` (probably written
+  as part of Phase 7's home-manager module)
+- ⬜ Phase 7 (remaining) — `homeManagerModules.default` and
+  `nixosModules.default`. Tau, pi, and the extension are all packaged;
+  the modules just need to wire them up (PATH install, systemd unit,
+  extension symlink, nftables option).
 - ⬜ Phase 8 — nftables enforcement
 - ⬜ Phase 8.5 — honeypot + events stream
 - ⬜ Phase 9 — audit log
