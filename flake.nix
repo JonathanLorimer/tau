@@ -30,6 +30,7 @@
   in {
     packages = forAllSystems ({pkgs, ...}: {
       pi = pkgs.callPackage ./nix/pi.nix {};
+      tau-extension = pkgs.callPackage ./nix/extension.nix {};
     });
 
     devShells = forAllSystems ({

@@ -3,4 +3,4 @@
 target/
 .claude/
 node_modules/
-result
+result/

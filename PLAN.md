@@ -116,6 +116,14 @@ Done — the foundation is in place:
 - ✅ Phase 2 — daemon integration test as `tests/integration.rs` (10 tests:
   mgmt protocol, persistence-across-restart, and all three deny markers).
   `tau serve` gained `--proxy-addr` so tests can use kernel-assigned ports.
+- ✅ Phase 3 — `extension/index.ts` provides three slash commands
+  (`/firewall-list`, `/firewall-add`, `/firewall-remove`) and a marker-aware
+  `web_fetch` tool with prompt-and-retry on `denied-unknown-host`.
+  Packaged as `packages.${system}.tau-extension` via a `runCommand` trivial
+  builder. Jail also gained `XDG_RUNTIME_DIR` inheritance plus a
+  `--bind-try` for the mgmt socket so the extension reaches the daemon
+  from inside the sandbox. The `escape-attempt` event handler is deferred
+  to Phase 8.5 (no publisher yet).
 - ✅ Phase 4 — bwrap wrapper, now `tau jail`, with curated env-inheritance
   (allowlist + denylist + user-extensible via `~/.config/tau/jail.env`
   and `--inherit-env`)
@@ -126,7 +134,6 @@ Done — the foundation is in place:
 
 TODO — in roughly the right order:
 
-- ⬜ Phase 3 — extension type-check
 - ⬜ Phase 6 — systemd user service for `tau serve`
 - ⬜ Phase 7 — `homeManagerModules.default`, `nixosModules.default`,
   and `packages.${system}.tau` (Rust binary via crane, mirroring the
