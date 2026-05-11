@@ -1,25 +1,47 @@
-# pi-firewall — implementation plan
+# tau — implementation plan
 
 ## Context for the agent
 
-This plan assumes you (Claude Code) are picking up partway through. The
-following components already exist in this repo and **should not be
-rewritten from scratch** — your job is to verify they compile, fix what
-the toolchain complains about, and build out the unbuilt pieces:
+`tau` is a personal coding harness wrapping the `pi` coding agent. It's
+exposed as a single Rust binary with three subcommands, plus a Nix flake
+that packages pi and (eventually) tau itself.
 
-- `Cargo.toml` — Rust crate manifest
-- `src/main.rs` — entry point with two listeners (TCP proxy + mgmt socket)
-- `src/proxy.rs` — HTTP CONNECT proxy with deny-marker response
-- `src/mgmt.rs` — unix-socket JSON protocol for allowlist mutations
-- `src/allowlist.rs` — persistent + session allowlist with atomic writes
-- `extension/index.ts` — pi extension: web_fetch tool, deny-and-retry, slash commands
-- `extension/package.json` — peer deps
-- `README.md` and `extension/README.md` — design docs
+### Subcommands
 
-These were written without a working compiler in the loop, so expect type
-errors, missing trait imports, or borrow issues. **Phase 1 is to make them
-compile and pass tests, not to rewrite them.** Preserve the architecture
-and comments — they document non-obvious decisions.
+- `tau serve` — runs the firewall daemon: an HTTPS CONNECT proxy on
+  `127.0.0.1:8118` plus a Unix-socket management interface.
+- `tau jail [-C dir] [--auth-dir dir] [--inherit-env LIST] -- [pi-args]`
+  — launches pi inside a bwrap sandbox routed through the daemon.
+- `tau ctl {list, add, remove, seed}` — talks to the daemon's mgmt
+  socket to mutate the allowlist.
+
+### Repository layout
+
+```
+src/
+  main.rs          clap top-level dispatch
+  paths.rs         XDG path helpers (config dir, runtime dir, defaults)
+  allowlist.rs     persistent + session allowlist; atomic writes
+  proxy.rs         HTTPS CONNECT proxy with structured deny markers
+  mgmt.rs          unix-socket protocol; Command/Reply are pub for tau ctl
+  cmd/
+    serve.rs       daemon entry point
+    jail.rs        bwrap wrapper, env-inheritance policy
+    ctl.rs         mgmt-socket client
+nix/
+  pi.nix           pi packaged from upstream's bun-compiled binary
+flake.nix          packages.${system}.pi + devShell
+```
+
+The extension (`extension/index.ts`) is not yet built — deferred to Phase 3.
+
+### Naming note
+
+This document predates the rename. Wherever it says **pi-firewall** (the
+daemon), the current binary is **`tau serve`**. Wherever it says
+`scripts/pi-jail` or `scripts/seed-allowlist`, the current equivalents are
+`tau jail` and `tau ctl seed`. The architectural intent is unchanged;
+only the names moved.
 
 ## Architectural anchors (do not violate without flagging)
 
@@ -84,6 +106,35 @@ Adding a value is a coordinated change. Don't reuse a marker for a
 different cause; don't introduce ad-hoc strings. Old markers are kept
 indefinitely once shipped — the extension may run an older version
 than the daemon during upgrades.
+
+## Status
+
+Done — the foundation is in place:
+
+- ✅ Phase 0 — toolchain (covered by the dev shell in `flake.nix`)
+- ✅ Phase 1 — daemon compiles, `cargo test` passes, `cargo clippy -D warnings` clean
+- ✅ Phase 4 — bwrap wrapper, now `tau jail`, with curated env-inheritance
+  (allowlist + denylist + user-extensible via `~/.config/tau/jail.env`
+  and `--inherit-env`)
+- ✅ Phase 5 — default-hosts seed, now `tau ctl seed`
+- ✅ Deny marker taxonomy implemented in `proxy.rs` via a `deny_response!`
+  macro that composes the three structured 403 responses
+- ✅ pi packaged in Nix (`nix/pi.nix`, exposed as `packages.${system}.pi`)
+
+TODO — in roughly the right order:
+
+- ⬜ Phase 2 — daemon integration test (better as Rust `tests/integration.rs`
+  driving the daemon through the public `Command`/`Reply` types, rather
+  than the bash-script approach the original phase sketched)
+- ⬜ Phase 3 — extension type-check
+- ⬜ Phase 6 — systemd user service for `tau serve`
+- ⬜ Phase 7 — `homeManagerModules.default`, `nixosModules.default`,
+  and `packages.${system}.tau` (Rust binary via crane, mirroring the
+  dactyl flake's pattern)
+- ⬜ Phase 8 — nftables enforcement
+- ⬜ Phase 8.5 — honeypot + events stream
+- ⬜ Phase 9 — audit log
+- ⬜ Phase 10 — defense-in-depth (optional)
 
 ## Phase 0 — environment sanity
 
@@ -276,57 +327,60 @@ config, not in the binary.
 Make the daemon start on login and restart on crash.
 
 **Tasks:**
-- Write `systemd/pi-firewall.service` as a `--user` unit:
-  - `ExecStart=` the absolute path to the binary (use `%h` for `$HOME`).
+- Write `systemd/tau.service` as a `--user` unit:
+  - `ExecStart=` `${pkgs.tau}/bin/tau serve` (via the home-manager module),
+    or the absolute path during manual install.
   - `Restart=on-failure`, `RestartSec=2s`.
   - `NoNewPrivileges=yes`.
   - `ProtectSystem=strict`.
-  - `ProtectHome=read-only` with
-    `ReadWritePaths=%h/.config/pi-firewall`.
+  - `ProtectHome=read-only` with `ReadWritePaths=%h/.config/tau`.
   - `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`.
   - `RestrictNamespaces=yes`, `LockPersonality=yes`,
     `MemoryDenyWriteExecute=yes`, `RestrictRealtime=yes`,
     `SystemCallArchitectures=native`.
-  - `RuntimeDirectory=pi-firewall` if you want systemd to manage the
-    runtime dir (optional).
-- Write a one-line README block in the daemon README explaining
-  `systemctl --user enable --now pi-firewall.service`.
+  - `RuntimeDirectory=tau` if you want systemd to manage the runtime
+    dir (optional; we currently default to `$XDG_RUNTIME_DIR/tau.sock`).
+- Write a one-line README block explaining
+  `systemctl --user enable --now tau.service`.
 
-**Done when:** `systemctl --user start pi-firewall` brings up the
-daemon, `systemctl --user status` shows it running, and
-`systemctl --user restart` cleanly cycles it without leaving stale
+**Done when:** `systemctl --user start tau` brings up the daemon,
+`systemctl --user status tau` shows it running, and
+`systemctl --user restart tau` cleanly cycles it without leaving stale
 sockets.
 
-## Phase 7 — NixOS module (declarative bundle)
+## Phase 7 — flake outputs (declarative bundle)
 
-This is the artifact that ties everything together for the user's
-NixOS config. It lives in this repo as `nix/module.nix` and is
-intended to be imported via flake from the user's home-manager.
+This is the artifact that ties everything together for the user's NixOS
+config. Already in place: `flake.nix` exposes a `devShell` and
+`packages.${system}.pi` (upstream binary). Still needed: a tau package,
+and the two consumer-facing modules.
 
 **Tasks:**
-- Write `flake.nix` exposing:
-  - `packages.${system}.pi-firewall` — the Rust binary built via
-    `rustPlatform.buildRustPackage`.
-  - `homeManagerModules.default` — a module that:
-    - Installs the `pi-firewall` binary on `PATH`.
-    - Installs the `pi-jail` wrapper on `PATH` as a
-      `pkgs.writeShellApplication` with declared dependencies.
-    - Configures the systemd user service (writes the unit from
-      Phase 6 verbatim).
-    - Optionally installs the pi extension by symlinking
-      `$out/share/pi-firewall/extension` to `~/.pi/agent/extensions/firewall`.
-  - `nixosModules.default` — a module that:
-    - Adds the nftables rule from Phase 8 (gated on a config option
-      `services.pi-firewall.enforce` defaulting to `false` so users
-      opt in).
-- Use `cargoLock.lockFile = ./Cargo.lock` so reproducible builds.
 
-**Done when:** `nix flake check` passes, and a minimal test config
-that imports the modules evaluates without error.
+- Add `packages.${system}.tau` to `flake.nix` — build the Rust binary
+  with `crane` (mirroring dactyl's pattern: a deps-only build cached
+  separately from the full source). `cargoLock.lockFile = ./Cargo.lock`
+  for reproducibility.
+
+- Add `homeManagerModules.default` (probably in `nix/home-manager.nix`):
+  - Installs `tau` and `pi` on PATH via `home.packages`.
+  - Writes the systemd user service from Phase 6 (unit invokes
+    `${pkgs.tau}/bin/tau serve`).
+  - Optionally symlinks the pi extension (from Phase 3) into
+    `~/.pi/agent/extensions/tau`.
+
+- Add `nixosModules.default` (probably in `nix/nixos.nix`):
+  - Adds the nftables rule from Phase 8, gated on
+    `services.tau.enforce` (default `false` so users opt in).
+  - When Phase 8.5 lands, this is where the redirect-to-honeypot rule
+    goes too.
+
+**Done when:** `nix flake check` passes, and a minimal test config that
+imports both modules evaluates without error.
 
 **Human checkpoint:** the user must `home-manager switch` and
-`nixos-rebuild switch` to actually apply the modules. Don't try to
-do this from the agent.
+`nixos-rebuild switch` to actually apply the modules. Don't try to do
+this from the agent.
 
 ## Phase 8 — nftables enforcement rule
 
