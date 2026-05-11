@@ -61,6 +61,9 @@ const INHERIT_DEFAULT: &[&str] = &[
     "NPM_TOKEN",
     "CARGO_REGISTRY_TOKEN",
     "CARGO_REGISTRIES_*_TOKEN",
+    // The tau extension uses this to compute the mgmt socket path;
+    // see also the explicit socket bind in run() below.
+    "XDG_RUNTIME_DIR",
 ];
 
 // Never inherit these, even if the user lists them. They'd either give the
@@ -213,6 +216,15 @@ pub fn run(args: Args) -> std::io::Result<()> {
     // loads on the next run) because RO breaks token rotation, and an
     // attacker already has live token access via process memory anyway.
     cmd.args(["--bind", &auth_str, &auth_str]);
+
+    // Bind the daemon's mgmt socket at the same host-side path so the tau
+    // extension inside the jail can manage the allowlist. -try because the
+    // daemon might not be running yet when the jail starts up (in that case
+    // the extension's slash commands surface a clean "couldn't connect"
+    // error to the user).
+    let mgmt_socket = paths::default_socket();
+    let mgmt_str = mgmt_socket.to_string_lossy().into_owned();
+    cmd.args(["--bind-try", &mgmt_str, &mgmt_str]);
 
     let project_str = project.to_string_lossy().into_owned();
     cmd.args(["--bind", &project_str, &project_str]); // rw bind of the project dir

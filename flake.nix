@@ -44,7 +44,8 @@
           rustfmt
 
           nodejs_20
-          typescript
+          typescript-go
+          pnpm
 
           bubblewrap
           netcat-openbsd
