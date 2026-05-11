@@ -54,7 +54,7 @@
     };
 
     # System-level prerequisites: bubblewrap, kernel knobs for the jail,
-    # and (Phase 8) the nftables enforcement rule.
+    # and the nftables enforcement rule.
     nixosModules.default = ./nix/nixos.nix;
 
     devShells = forAllSystems ({

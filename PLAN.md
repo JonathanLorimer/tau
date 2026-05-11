@@ -146,15 +146,17 @@ Done — the foundation is in place:
     (`installPi`, `installExtension`, `service.enable`).
   - `nixosModules.default` (`nix/nixos.nix`) installs bubblewrap at the
     system level, enables `security.unprivilegedUsernsClone`, and exposes
-    `programs.tau.enforce` as a stub for the Phase 8 nftables rule (emits
-    a warning today since the rule isn't implemented yet).
+    `programs.tau.enforce` to install the nftables enforcement rule.
   - `nix/systemd-unit.nix` extracted from `home-manager.nix` so the unit
     definition is reusable.
+- ✅ Phase 8 — nftables enforcement rule installed by the NixOS module
+  when `programs.tau.enforce = true`. The rule allows the jail UID to
+  reach the proxy at `127.0.0.1:8118` and any loopback traffic, and
+  rejects everything else with ICMP admin-prohibited so applications
+  see a clean "connection refused" rather than a silent timeout.
 
 TODO — in roughly the right order:
 
-- ⬜ Phase 8 — nftables enforcement (fills in the stubbed rule body in
-  `nix/nixos.nix` when `programs.tau.enforce = true`)
 - ⬜ Phase 8.5 — honeypot + events stream
 - ⬜ Phase 9 — audit log
 - ⬜ Phase 10 — defense-in-depth (optional)

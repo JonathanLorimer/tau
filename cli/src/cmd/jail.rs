@@ -4,8 +4,9 @@ use std::process::Command;
 
 use crate::paths;
 
-// Load-bearing: the Phase 8 nftables rule keys on this exact UID.
-// Changing one without the other breaks enforcement.
+// Load-bearing: the nftables enforcement rule installed by the NixOS
+// module (programs.tau.enforce) keys on this exact UID. Changing one
+// without the other breaks enforcement.
 const JAIL_UID: u32 = 5555;
 const JAIL_GID: u32 = 5555;
 
@@ -90,8 +91,8 @@ const INHERIT_DENY: &[&str] = &[
 /// Launch pi inside a bwrap sandbox routed through the firewall.
 ///
 /// The sandbox unshares all namespaces except network, sets the jail UID
-/// to 5555 (matching the Phase 8 nftables rule), and forces all outbound
-/// HTTPS through the local firewall proxy on 127.0.0.1:8118.
+/// to 5555 (matching the nftables enforcement rule), and forces all
+/// outbound HTTPS through the local firewall proxy on 127.0.0.1:8118.
 #[derive(clap::Args)]
 pub struct Args {
     /// Directory bind-mounted rw inside the jail; defaults to the cwd.
@@ -159,7 +160,7 @@ pub fn run(args: Args) -> std::io::Result<()> {
 
     let uid = JAIL_UID.to_string();
     let gid = JAIL_GID.to_string();
-    cmd.args(["--uid", &uid]); // run as uid 5555 inside (matches the Phase 8 nftables rule)
+    cmd.args(["--uid", &uid]); // run as uid 5555 inside (matches the nftables rule)
     cmd.args(["--gid", &gid]); // and gid 5555
 
     // Build the inherit allowlist: defaults + ~/.config/tau/jail.env + --inherit-env.
