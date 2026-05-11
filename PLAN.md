@@ -154,10 +154,36 @@ Done — the foundation is in place:
   reach the proxy at `127.0.0.1:8118` and any loopback traffic, and
   rejects everything else with ICMP admin-prohibited so applications
   see a clean "connection refused" rather than a silent timeout.
+- ✅ Phase 8.5 — escape detection + honeypot.
+  - Daemon: `cli/src/honeypot.rs` runs a third tokio task on
+    `127.0.0.1:8119`. Per accept: semaphore-bounded (32 concurrent),
+    500ms hard timeout, recovers original destination via
+    `SO_ORIGINAL_DST` (with `local_addr` fallback for tests), closes the
+    socket without reading any bytes, dedup-keyed
+    `HashMap<(IpAddr, u16), …>` over a 5s window, publishes `Event`
+    over a `tokio::sync::broadcast` channel. v4 only for the destination
+    recovery; the plan calls out v6 as a follow-up.
+  - Mgmt protocol: new `subscribe_events` command flips the connection
+    into stream mode — ack `{"ok":true}` then NDJSON events until the
+    client disconnects or the channel closes. Lagged subscribers are
+    warned but kept alive.
+  - NixOS module: split into `tau-jail-filter` (inet) and `tau-jail-nat`
+    (ip). Filter accepts loopback to `{8118, 8119}` and any `lo`;
+    everything else rejected. NAT DNATs non-loopback TCP from the jail
+    UID to `127.0.0.1:8119` at priority -100 so conntrack preserves the
+    original destination for `SO_ORIGINAL_DST`.
+  - Extension: `runEventSubscriber` opens the mgmt socket on factory
+    init, subscribes, and renders `escape-attempt` events as
+    `ctx.ui.notify(…, "error")` using the most recent session context
+    captured via the `session_start` hook. Auto-reconnects with a 2s
+    backoff so a temporarily-down daemon doesn't tear the subscriber
+    out for the rest of the session.
+  - Tests: three new integration tests cover single-emit, burst-dedup,
+    and no-subscriber survival. Three new unit tests cover dedup
+    semantics. All 26 tests pass under `cargo test`.
 
 TODO — in roughly the right order:
 
-- ⬜ Phase 8.5 — honeypot + events stream
 - ⬜ Phase 9 — audit log
 - ⬜ Phase 10 — defense-in-depth (optional)
 

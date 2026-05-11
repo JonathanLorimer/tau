@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::allowlist::Allowlist;
-use crate::{mgmt, paths, proxy};
+use crate::{honeypot, mgmt, paths, proxy};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -25,6 +25,18 @@ pub struct Args {
         default_value = "127.0.0.1:8118"
     )]
     proxy_addr: SocketAddr,
+
+    /// Address the escape-detection honeypot binds on. The kernel NAT rule
+    /// installed by the NixOS module (`programs.tau.enforce`) redirects
+    /// non-proxy traffic from the jail UID to this address; we recover the
+    /// original destination via `SO_ORIGINAL_DST`.
+    #[arg(
+        long,
+        env = "TAU_HONEYPOT_ADDR",
+        value_name = "ADDR",
+        default_value = "127.0.0.1:8119"
+    )]
+    honeypot_addr: SocketAddr,
 }
 
 pub async fn run(args: Args) -> std::io::Result<()> {
@@ -36,12 +48,17 @@ pub async fn run(args: Args) -> std::io::Result<()> {
     let allowlist = Allowlist::load(&config_path)?;
     let allowlist = Arc::new(RwLock::new(allowlist));
 
+    let events = honeypot::channel();
+
     tokio::select! {
         res = proxy::run(args.proxy_addr, allowlist.clone()) => {
             tracing::error!("proxy exited: {res:?}");
         }
-        res = mgmt::run(&socket_path, allowlist) => {
+        res = mgmt::run(&socket_path, allowlist, events.clone()) => {
             tracing::error!("mgmt exited: {res:?}");
+        }
+        res = honeypot::run(args.honeypot_addr, events) => {
+            tracing::error!("honeypot exited: {res:?}");
         }
     }
 

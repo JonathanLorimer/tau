@@ -2,6 +2,7 @@ use clap::Parser;
 
 mod allowlist;
 mod cmd;
+mod honeypot;
 mod mgmt;
 mod paths;
 mod proxy;

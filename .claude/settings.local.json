@@ -5,7 +5,8 @@
       "WebSearch",
       "Bash(gh api *)",
       "WebFetch(domain:www.npmjs.com)",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "Bash(cargo build *)"
     ]
   }
 }

@@ -32,15 +32,22 @@ in {
       type = lib.types.bool;
       default = false;
       description = ''
-        Install the nftables rule that drops outbound TCP from
-        `programs.tau.jailUid` except to the local proxy at
-        `127.0.0.1:8118`. With this enabled, a tool inside the bwrap jail
-        that ignores HTTPS_PROXY can't bypass the firewall — the kernel
-        refuses its packets with ICMP admin-prohibited.
+        Install the nftables rules that constrain outbound TCP from
+        `programs.tau.jailUid`. With this enabled:
 
-        Phase 8.5 will switch the reject to a NAT redirect toward a
-        honeypot port on the daemon for richer telemetry on bypass
-        attempts.
+          - traffic from the jail UID to the proxy (`127.0.0.1:8118`)
+            and any loopback destination is accepted unchanged;
+          - all other TCP traffic from the jail UID is DNAT-redirected
+            to the local honeypot at `127.0.0.1:8119`, where the daemon
+            records the original destination via `SO_ORIGINAL_DST` and
+            emits an `escape-attempt` event to subscribed extensions;
+          - non-TCP traffic from the jail UID is rejected with ICMP
+            admin-prohibited so the application sees a clean failure
+            rather than a silent timeout.
+
+        Currently IPv4 only — the NAT chain rewrites v4 only. v6 traffic
+        falls through to the filter's reject so it's still blocked, just
+        not redirected to the honeypot for telemetry.
 
         Enabling this also enables `networking.nftables`, which may
         coexist with `networking.firewall` depending on your config.
@@ -70,28 +77,45 @@ in {
     # keeps working.
     security.unprivilegedUsernsClone = true;
 
-    # The enforcement rule. With `policy accept`, only packets that match
-    # the explicit jail-UID rules are touched — other users (root, you)
-    # are unaffected. The rule order matters:
+    # Enforcement is split across two tables. With `policy accept` on each
+    # chain, only packets that match the explicit jail-UID rules are
+    # touched — other users (root, you) are unaffected.
     #
-    #   1. Accept to the proxy on loopback (the legitimate path).
-    #   2. Accept any traffic on the `lo` interface — pi may legitimately
-    #      need to talk to local services (dev servers, databases, etc.).
-    #      We trust localhost; the threat model is external exfiltration.
-    #   3. Reject everything else from the jail UID with ICMP
-    #      admin-prohibited, so the application sees an immediate
-    #      "connection refused" rather than a silent timeout.
+    # The NAT chain runs at priority -100, well before the filter chain at
+    # priority 0. Order of effect on a jail-UID v4 packet to a non-loopback
+    # destination:
+    #
+    #   1. nat output (prio -100) — destination rewritten to 127.0.0.1:8119.
+    #      The original destination is preserved in conntrack and recovered
+    #      by the honeypot via `SO_ORIGINAL_DST`.
+    #   2. filter output (prio 0) — the rewritten packet now targets
+    #      127.0.0.1:8119, which matches the loopback-to-honeypot accept rule.
+    #
+    # Traffic that doesn't match the NAT redirect (loopback, non-TCP) flows
+    # through the filter chain unchanged and is either accepted (loopback)
+    # or rejected (everything else).
     networking.nftables = lib.mkIf cfg.enforce {
       enable = true;
-      tables.tau-jail = {
+      tables.tau-jail-filter = {
         family = "inet";
         content = ''
           chain output {
             type filter hook output priority 0; policy accept;
-            meta skuid ${toString cfg.jailUid} ip  daddr 127.0.0.1 tcp dport 8118 accept
-            meta skuid ${toString cfg.jailUid} ip6 daddr ::1       tcp dport 8118 accept
+            meta skuid ${toString cfg.jailUid} ip  daddr 127.0.0.1 tcp dport { 8118, 8119 } accept
+            meta skuid ${toString cfg.jailUid} ip6 daddr ::1       tcp dport { 8118, 8119 } accept
             meta skuid ${toString cfg.jailUid} oifname "lo" accept
             meta skuid ${toString cfg.jailUid} reject with icmpx type admin-prohibited
+          }
+        '';
+      };
+      tables.tau-jail-nat = {
+        family = "ip";
+        content = ''
+          chain output {
+            type nat hook output priority -100; policy accept;
+            meta skuid ${toString cfg.jailUid} ip daddr 127.0.0.1 return
+            meta skuid ${toString cfg.jailUid} oifname "lo" return
+            meta skuid ${toString cfg.jailUid} tcp redirect to :8119
           }
         '';
       };

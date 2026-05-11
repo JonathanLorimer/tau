@@ -17,12 +17,13 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { fetch, ProxyAgent } from "undici";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const PROXY_URL = "http://127.0.0.1:8118";
 const MARKER_HEADER = "x-pi-firewall-status"; // lowercased; fetch headers are case-insensitive
 const DEFAULT_PORT = 443;
 const MAX_RETRY_ATTEMPTS = 3;
+const EVENTS_RECONNECT_DELAY_MS = 2_000;
 
 // ---------------- mgmt socket client ----------------
 
@@ -35,11 +36,23 @@ type MgmtCmd =
   | { cmd: "list" }
   | { cmd: "add_session"; host: string; port: number }
   | { cmd: "add_persist"; host: string; port: number }
-  | { cmd: "remove"; host: string; port: number };
+  | { cmd: "remove"; host: string; port: number }
+  | { cmd: "subscribe_events" };
 
 type MgmtReply =
   | { ok: true; entries: Entry[] }
   | { ok: boolean };
+
+// Out-of-band events emitted by the daemon's honeypot. Versioned contract
+// with `cli/src/honeypot.rs::Event` — adding a `kind` requires updating
+// both sides in lockstep (see PLAN.md "Deny marker taxonomy").
+type DaemonEvent = {
+  kind: "escape-attempt";
+  ts: string;
+  host: string;
+  port: number;
+  count: number;
+};
 
 function socketPath(): string {
   // Mirrors paths::default_socket() in the daemon: $XDG_RUNTIME_DIR/tau.sock,
@@ -105,9 +118,111 @@ function parseTarget(args: string): { host: string; port: number } | null {
   return null;
 }
 
+// ---------------- escape-attempt event subscriber ----------------
+
+/**
+ * Long-running subscriber to the daemon's events stream. Opens a fresh mgmt
+ * socket connection, sends `subscribe_events`, then renders each
+ * `escape-attempt` event as a red-alert notification via the most recently
+ * seen session context. Reconnects on disconnect.
+ *
+ * Runs for the life of the extension. We don't await this from the factory;
+ * the promise is fired-and-forgotten with a top-level catch.
+ */
+async function runEventSubscriber(getCtx: () => ExtensionContext | null): Promise<void> {
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      await subscribeOnce(getCtx);
+    } catch (err) {
+      // Daemon down, socket missing, parse error — fall through to reconnect.
+      console.error(`tau: events subscriber error: ${(err as Error).message}`);
+    }
+    await new Promise((r) => setTimeout(r, EVENTS_RECONNECT_DELAY_MS));
+  }
+}
+
+function subscribeOnce(getCtx: () => ExtensionContext | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath());
+    socket.setEncoding("utf-8");
+
+    let buf = "";
+    let sawAck = false;
+
+    socket.on("data", (chunk) => {
+      buf += chunk;
+      let newline: number;
+      while ((newline = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, newline).trim();
+        buf = buf.slice(newline + 1);
+        if (!line) continue;
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          // Bad line — drop and continue.
+          continue;
+        }
+
+        if (!sawAck) {
+          const ack = parsed as MgmtReply;
+          if (!ack.ok) {
+            socket.destroy();
+            reject(new Error("daemon refused subscribe_events"));
+            return;
+          }
+          sawAck = true;
+          continue;
+        }
+
+        renderEvent(parsed as DaemonEvent, getCtx());
+      }
+    });
+
+    socket.on("error", reject);
+    socket.on("end", () => resolve());
+    socket.on("close", () => resolve());
+    socket.on("connect", () => {
+      const cmd: MgmtCmd = { cmd: "subscribe_events" };
+      socket.write(`${JSON.stringify(cmd)}\n`);
+    });
+  });
+}
+
+function renderEvent(event: DaemonEvent, ctx: ExtensionContext | null): void {
+  if (event.kind !== "escape-attempt") return;
+
+  const countSuffix = event.count > 1 ? ` (×${event.count})` : "";
+  const message =
+    `tau-firewall: bypass attempt blocked${countSuffix}. A process in the jail tried to connect ` +
+    `directly to ${event.host}:${event.port}, ignoring HTTPS_PROXY. The kernel redirected it to ` +
+    `the honeypot. If you didn't expect any tool to reach this destination, treat it as suspicious.`;
+
+  if (ctx && ctx.hasUI) {
+    ctx.ui.notify(message, "error");
+  } else {
+    // No active session UI — log so it shows up somewhere.
+    console.error(`tau: ${message}`);
+  }
+}
+
 // ---------------- extension entry point ----------------
 
 export default function (pi: ExtensionAPI) {
+  // The active session's context, refreshed on every session_start. The
+  // events subscriber pulls this via a closure so notifications go to the
+  // session that's currently in the foreground.
+  let currentCtx: ExtensionContext | null = null;
+  pi.on("session_start", (_event, ctx) => {
+    currentCtx = ctx;
+  });
+
+  runEventSubscriber(() => currentCtx).catch((err) => {
+    console.error(`tau: events subscriber crashed: ${(err as Error).message}`);
+  });
+
   // ---- slash commands ----
 
   pi.registerCommand("firewall-list", {

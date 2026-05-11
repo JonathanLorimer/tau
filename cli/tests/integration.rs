@@ -13,7 +13,9 @@
 //! What's NOT tested here (deferred to a future NixOS-VM layer):
 //! - the allow-and-tunnel path — would need a port-443 listener
 //! - the bwrap jail, systemd unit, nftables enforcement
-//! - the honeypot (Phase 8.5) and audit log (Phase 9)
+//! - the kernel NAT redirect to the honeypot — that requires nftables;
+//!   honeypot semantics are exercised here via the `local_addr` fallback path
+//! - the audit log (Phase 9)
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -30,6 +32,7 @@ struct Harness {
     _tempdir: tempfile::TempDir,
     socket_path: PathBuf,
     proxy_addr: SocketAddr,
+    honeypot_addr: SocketAddr,
     // Held so kill_on_drop fires when the harness drops; never read directly.
     _proc: Child,
 }
@@ -40,12 +43,14 @@ impl Harness {
         let socket_path = tempdir.path().join("tau.sock");
         let allowlist_path = tempdir.path().join("allow.json");
         let proxy_addr = pick_local_port();
-        let proc = spawn(&socket_path, &allowlist_path, &proxy_addr)?;
+        let honeypot_addr = pick_local_port();
+        let proc = spawn(&socket_path, &allowlist_path, &proxy_addr, &honeypot_addr)?;
 
         let h = Self {
             _tempdir: tempdir,
             socket_path,
             proxy_addr,
+            honeypot_addr,
             _proc: proc,
         };
         // Suppress the unused-let warning if allowlist_path ever becomes
@@ -60,16 +65,48 @@ impl Harness {
         loop {
             let mgmt_ok = UnixStream::connect(&self.socket_path).await.is_ok();
             let proxy_ok = TcpStream::connect(&self.proxy_addr).await.is_ok();
-            if mgmt_ok && proxy_ok {
+            let honeypot_ok = TcpStream::connect(&self.honeypot_addr).await.is_ok();
+            if mgmt_ok && proxy_ok && honeypot_ok {
                 return Ok(());
             }
             if Instant::now() > deadline {
                 return Err(std::io::Error::other(
-                    "daemon failed to bind both listeners within 5s",
+                    "daemon failed to bind all listeners within 5s",
                 ));
             }
             sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    /// Open a subscriber connection: send `subscribe_events`, read the ack,
+    /// and return the connected stream wrapped in a `BufReader`. The daemon
+    /// only writes to this socket post-ack, so we keep the whole stream
+    /// (not just the read half) — dropping the returned reader closes the
+    /// subscription cleanly.
+    async fn subscribe_events(&self) -> std::io::Result<BufReader<UnixStream>> {
+        let mut stream = UnixStream::connect(&self.socket_path).await?;
+        stream.write_all(b"{\"cmd\":\"subscribe_events\"}\n").await?;
+
+        let mut reader = BufReader::new(stream);
+        let mut ack = String::new();
+        reader.read_line(&mut ack).await?;
+        let ack_json: Value = serde_json::from_str(ack.trim()).map_err(std::io::Error::other)?;
+        if ack_json != json!({"ok": true}) {
+            return Err(std::io::Error::other(format!(
+                "unexpected subscribe ack: {ack_json}"
+            )));
+        }
+        Ok(reader)
+    }
+
+    /// Open and immediately close a TCP connection to the honeypot. The
+    /// kernel NAT redirect isn't in the test path, so the daemon's
+    /// `SO_ORIGINAL_DST` call fails and falls back to `local_addr()` — the
+    /// event ends up reporting the honeypot's bind address as the "host".
+    async fn trigger_honeypot(&self) -> std::io::Result<()> {
+        let stream = TcpStream::connect(&self.honeypot_addr).await?;
+        drop(stream);
+        Ok(())
     }
 
     async fn mgmt(&self, cmd: Value) -> std::io::Result<Value> {
@@ -137,7 +174,12 @@ fn pick_local_port() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
-fn spawn(socket: &Path, allowlist: &Path, proxy_addr: &SocketAddr) -> std::io::Result<Child> {
+fn spawn(
+    socket: &Path,
+    allowlist: &Path,
+    proxy_addr: &SocketAddr,
+    honeypot_addr: &SocketAddr,
+) -> std::io::Result<Child> {
     Command::new(env!("CARGO_BIN_EXE_tau"))
         .args([
             "serve",
@@ -147,6 +189,8 @@ fn spawn(socket: &Path, allowlist: &Path, proxy_addr: &SocketAddr) -> std::io::R
             socket.to_str().unwrap(),
             "--proxy-addr",
             &proxy_addr.to_string(),
+            "--honeypot-addr",
+            &honeypot_addr.to_string(),
         ])
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
@@ -228,8 +272,9 @@ async fn persistent_entries_survive_restart() {
 
     // First daemon — write a persistent entry, then explicitly kill+reap.
     let addr1 = pick_local_port();
-    let mut p1 = spawn(&socket, &allowlist, &addr1).unwrap();
-    wait_for_listeners(&socket, &addr1).await.unwrap();
+    let hp1 = pick_local_port();
+    let mut p1 = spawn(&socket, &allowlist, &addr1, &hp1).unwrap();
+    wait_for_listeners(&socket, &addr1, &hp1).await.unwrap();
     send_mgmt(
         &socket,
         json!({"cmd": "add_persist", "host": "persistent.example", "port": 443}),
@@ -238,11 +283,12 @@ async fn persistent_entries_survive_restart() {
     .unwrap();
     p1.kill().await.unwrap();
 
-    // Second daemon — fresh port, same paths. allow.json was atomically
+    // Second daemon — fresh ports, same paths. allow.json was atomically
     // renamed before the mgmt reply came back, so it must be on disk.
     let addr2 = pick_local_port();
-    let mut p2 = spawn(&socket, &allowlist, &addr2).unwrap();
-    wait_for_listeners(&socket, &addr2).await.unwrap();
+    let hp2 = pick_local_port();
+    let mut p2 = spawn(&socket, &allowlist, &addr2, &hp2).unwrap();
+    wait_for_listeners(&socket, &addr2, &hp2).await.unwrap();
     let reply = send_mgmt(&socket, json!({"cmd": "list"})).await.unwrap();
     assert_eq!(
         reply,
@@ -256,17 +302,22 @@ async fn persistent_entries_survive_restart() {
 
 /// Free-function equivalent of `Harness::wait_ready`, usable for tests that
 /// drive the daemon directly (e.g. the restart test).
-async fn wait_for_listeners(socket: &Path, proxy_addr: &SocketAddr) -> std::io::Result<()> {
+async fn wait_for_listeners(
+    socket: &Path,
+    proxy_addr: &SocketAddr,
+    honeypot_addr: &SocketAddr,
+) -> std::io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let mgmt_ok = UnixStream::connect(socket).await.is_ok();
         let proxy_ok = TcpStream::connect(proxy_addr).await.is_ok();
-        if mgmt_ok && proxy_ok {
+        let honeypot_ok = TcpStream::connect(honeypot_addr).await.is_ok();
+        if mgmt_ok && proxy_ok && honeypot_ok {
             return Ok(());
         }
         if Instant::now() > deadline {
             return Err(std::io::Error::other(
-                "daemon failed to bind both listeners within 5s",
+                "daemon failed to bind all listeners within 5s",
             ));
         }
         sleep(Duration::from_millis(25)).await;
@@ -337,4 +388,73 @@ async fn session_add_unlocks_for_unknown_host_marker() {
     let (status, marker) = h.connect(&req).await.unwrap();
     assert!(status.contains("403"));
     assert_eq!(marker.as_deref(), Some("denied-non-https"));
+}
+
+// ---------- honeypot + events stream ----------
+
+/// Pull the next event line from a subscriber, with a 2s ceiling so a
+/// missing event surfaces as a test failure rather than a hang.
+async fn next_event(reader: &mut BufReader<UnixStream>) -> std::io::Result<Value> {
+    let mut line = String::new();
+    let n = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+        .await
+        .map_err(|_| std::io::Error::other("timed out waiting for event"))??;
+    if n == 0 {
+        return Err(std::io::Error::other("events stream closed unexpectedly"));
+    }
+    serde_json::from_str(line.trim()).map_err(std::io::Error::other)
+}
+
+#[tokio::test]
+async fn honeypot_emits_escape_attempt_event() {
+    let h = Harness::start().await.unwrap();
+    let mut events = h.subscribe_events().await.unwrap();
+
+    h.trigger_honeypot().await.unwrap();
+
+    let event = next_event(&mut events).await.unwrap();
+    assert_eq!(event["kind"], json!("escape-attempt"));
+    assert_eq!(event["port"], json!(h.honeypot_addr.port()));
+    assert_eq!(event["count"], json!(1));
+    assert!(event["ts"].is_string(), "ts missing: {event}");
+    assert!(event["host"].is_string(), "host missing: {event}");
+}
+
+#[tokio::test]
+async fn honeypot_dedupes_burst_within_window() {
+    let h = Harness::start().await.unwrap();
+    let mut events = h.subscribe_events().await.unwrap();
+
+    // Five rapid attempts to the same (host, port). The first emits an
+    // event; the next four should be suppressed inside the 5s dedup window.
+    for _ in 0..5 {
+        h.trigger_honeypot().await.unwrap();
+    }
+
+    let first = next_event(&mut events).await.unwrap();
+    assert_eq!(first["kind"], json!("escape-attempt"));
+    assert_eq!(first["count"], json!(1));
+
+    // A second read should now time out — no follow-up event in the window.
+    let mut line = String::new();
+    let res = tokio::time::timeout(
+        Duration::from_millis(200),
+        events.read_line(&mut line),
+    )
+    .await;
+    assert!(res.is_err(), "expected no second event, got: {line}");
+}
+
+#[tokio::test]
+async fn honeypot_survives_publish_with_no_subscribers() {
+    // The broadcast send returns Err when no receivers are attached; the
+    // daemon must treat that as a no-op rather than a fatal error. Verify
+    // by triggering events with no subscriber and then proving the daemon
+    // still services regular mgmt commands.
+    let h = Harness::start().await.unwrap();
+    for _ in 0..3 {
+        h.trigger_honeypot().await.unwrap();
+    }
+    let reply = h.mgmt(json!({"cmd": "list"})).await.unwrap();
+    assert_eq!(reply, json!({"ok": true, "entries": []}));
 }
