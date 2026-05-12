@@ -38,6 +38,14 @@ in
       pname = "tau";
       cargoExtraArgs = "-p tau --locked";
 
+      # Only run unit tests (the `#[cfg(test)]` modules inside src/) during
+      # the Nix check phase. The integration suite in tests/integration.rs
+      # spawns a real daemon with kernel-assigned ports and uses a 5s
+      # readiness deadline, which races with the Nix sandbox's slower wall
+      # clock plus the test runner's parallelism. Run `cargo test` locally
+      # to exercise the integration suite.
+      cargoTestExtraArgs = "--bins";
+
       meta = {
         description = "Personal coding harness: HTTPS firewall daemon, bwrap jail wrapper, and CLI for the pi coding agent";
         license = lib.licenses.mit;

@@ -50,7 +50,7 @@
       # Inject our flake's packages so the module can default the
       # tau/pi/tau-extension package options to them without each user's
       # config having to know the flake's output names.
-      _module.args.tauPackages = self.packages.${pkgs.system};
+      _module.args.tauPackages = self.packages.${pkgs.stdenv.hostPlatform.system};
     };
 
     # System-level prerequisites: bubblewrap, kernel knobs for the jail,
