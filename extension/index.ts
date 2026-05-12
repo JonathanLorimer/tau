@@ -322,6 +322,11 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
+      // Track hosts we've successfully added this invocation so we can detect
+      // when an allowlist update doesn't take effect (daemon not running, etc.)
+      // and fail fast instead of re-prompting in a loop.
+      const addedHosts = new Set<string>();
+
       for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
         let response: Awaited<ReturnType<typeof fetch>>;
         try {
@@ -335,8 +340,17 @@ export default function (pi: ExtensionAPI) {
             signal: combinedSignal,
           });
         } catch (err) {
+          const error = err as Error;
+          let text: string;
+          if (error.name === "TimeoutError" || error.name === "AbortError") {
+            text = `Upstream server at ${host} did not respond within ${FETCH_TIMEOUT_MS / 1_000}s. The server may be slow or temporarily unavailable.`;
+          } else if (error.message.includes("127.0.0.1:8118") || error.message.includes(":8118")) {
+            text = `Could not reach the tau proxy (127.0.0.1:8118). Is \`tau serve\` running?`;
+          } else {
+            text = `Network error after CONNECT tunnel was established: ${error.message}`;
+          }
           return {
-            content: [{ type: "text", text: `Network error: ${(err as Error).message}` }],
+            content: [{ type: "text", text }],
             details: { error: true },
           };
         }
@@ -380,6 +394,18 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (marker === "denied-unknown-host") {
+          if (addedHosts.has(host)) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `${host} was added to the allowlist but is still being denied. The daemon may not have received the update — verify with \`tau ctl list\`.`,
+                },
+              ],
+              details: { blocked: "allow-not-effective", host },
+            };
+          }
+
           if (!ctx.hasUI) {
             return {
               content: [
@@ -421,6 +447,7 @@ export default function (pi: ExtensionAPI) {
               }
             }
             if (added) {
+              addedHosts.add(host);
               const retry = await ctx.ui.confirm(`Added ${host} to allowlist`, "Retry the fetch now?");
               if (retry) continue;
               return {
