@@ -7,8 +7,17 @@
   # src/, tests/, examples/, benches/ at any depth.
   src = craneLib.cleanCargoSource ../.;
 
+  # Single source of truth for the version: `cli/Cargo.toml`. Without
+  # this, crane only sees the workspace root `Cargo.toml` (which has no
+  # `[package]` section) and falls back to a `0.0.1` default for the
+  # derivation name.
+  crateInfo = craneLib.crateNameFromCargoToml {
+    cargoToml = ../cli/Cargo.toml;
+  };
+
   commonArgs = {
     inherit src;
+    inherit (crateInfo) version;
     strictDeps = true;
     # The tau crate has no native dependencies; tokio, clap, serde, etc.
     # are pure-Rust crates. So no nativeBuildInputs / buildInputs.

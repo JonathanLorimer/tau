@@ -1,5 +1,7 @@
 # tau
 
+> Tau is just  a thin wrapper around pi, the rename is just for personal amusement
+
 A personal coding harness that runs the [pi](https://github.com/earendil-works/pi-mono)
 coding agent inside a bwrap sandbox whose outbound network is constrained
 by a small local HTTPS proxy and (optionally) an nftables UID rule. The

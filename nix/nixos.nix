@@ -114,7 +114,7 @@ in {
             type nat hook output priority -100; policy accept;
             meta skuid ${toString cfg.jailUid} ip daddr 127.0.0.1 return
             meta skuid ${toString cfg.jailUid} oifname "lo" return
-            meta skuid ${toString cfg.jailUid} tcp redirect to :8119
+            meta skuid ${toString cfg.jailUid} ip protocol tcp redirect to :8119
           }
         '';
       };
