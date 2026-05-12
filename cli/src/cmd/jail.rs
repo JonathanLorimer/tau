@@ -197,6 +197,14 @@ pub fn run(args: Args) -> std::io::Result<()> {
     cmd.args(["--proc", "/proc"]); // fresh procfs; JIT (bun's JSC) reads /proc/self/maps
     cmd.args(["--dev", "/dev"]);   // minimal /dev (null, zero, random, urandom, tty)
 
+    // Profile dirs (/etc/profiles, /run/current-system, /run/wrappers) are
+    // deliberately not bound. pi is wrapped by `nix/pi.nix` via makeWrapper
+    // so its `$PATH` is prefixed with canonical /nix/store paths for its
+    // configured tool deps — pi finds fd/ripgrep/etc. by store-path, not
+    // by walking the host profile tree. Combined with `which_pi`
+    // canonicalize'ing the launch path, the jail's only host-FS reach
+    // outside /etc/* below is the read-only /nix/store mount.
+
     // /etc files we need; -try means "skip silently if missing" — handy because
     // /etc/static is a NixOS-ism and won't exist on other distros.
     for p in [

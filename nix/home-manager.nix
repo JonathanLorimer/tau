@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   tauPackages,
   ...
 }: let
@@ -22,11 +23,32 @@ in {
       description = "Whether to install the pi coding agent on PATH.";
     };
 
+    toolDeps = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = with pkgs; [fd ripgrep];
+      defaultText = lib.literalExpression "with pkgs; [ fd ripgrep ]";
+      description = ''
+        Runtime tools pi expects on PATH but doesn't bundle. Threaded
+        into the pi derivation via `makeWrapper` — pi's `$PATH` is
+        prefixed with the canonical store-paths of these packages, so
+        pi finds them regardless of the launching shell's environment
+        and the jail doesn't need to bind any host profile dirs.
+
+        Without this, pi auto-downloads `fd` and `rg` from GitHub
+        releases on first run, which fails under the tau firewall.
+        Extend the list to make additional tools (`git`, `jq`, …)
+        reachable from inside the jail.
+      '';
+    };
+
     pi = lib.mkOption {
       type = lib.types.package;
-      default = tauPackages.pi;
-      defaultText = "tauPackages.pi";
-      description = "The pi package to install when installPi = true.";
+      default = tauPackages.pi.override {inherit (cfg) toolDeps;};
+      defaultText = "tauPackages.pi.override { inherit (cfg) toolDeps; }";
+      description = ''
+        The pi package to install when installPi = true. By default the
+        flake's pi is rewrapped with `cfg.toolDeps` on its PATH.
+      '';
     };
 
     installExtension = lib.mkOption {

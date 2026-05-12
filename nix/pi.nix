@@ -3,6 +3,16 @@
   fetchurl,
   lib,
   autoPatchelfHook,
+  makeWrapper,
+  fd,
+  ripgrep,
+  # Runtime tools pi probes for via `spawnSync(name, ["--version"])`.
+  # Anything not found here triggers pi's auto-download path, which hits
+  # GitHub releases — incompatible with the tau firewall. The wrapper
+  # prepends these to `$PATH` from canonical `/nix/store` locations, so
+  # pi finds them regardless of the launching shell's environment.
+  # Override via `pkgs.callPackage ./pi.nix { toolDeps = [...]; }`.
+  toolDeps ? [fd ripgrep],
 }: let
   version = "0.74.0";
 
@@ -41,21 +51,27 @@ in
 
     # autoPatchelfHook rewrites the dynamic-linker path so the bun-compiled
     # binary loads on NixOS. Darwin binaries don't need this.
-    nativeBuildInputs = lib.optional stdenv.isLinux autoPatchelfHook;
+    # makeWrapper is used to inject `toolDeps` onto pi's `$PATH`.
+    nativeBuildInputs =
+      [makeWrapper]
+      ++ lib.optional stdenv.isLinux autoPatchelfHook;
 
     dontConfigure = true;
     dontBuild = true;
 
     # Tarball extracts to ./pi/ (which becomes cwd after unpackPhase). The
     # binary expects its sibling files (theme/, photon_rs_bg.wasm, etc.) at
-    # runtime, so we keep the layout intact under $out/share/pi/ and symlink
-    # just the binary onto PATH.
+    # runtime, so we keep the layout intact under $out/share/pi/ and put
+    # the launchable wrapper at $out/bin/pi. The wrapper script lives in
+    # the store, exec's the real bun binary, and prefixes `$PATH` with the
+    # tool deps' canonical store-paths.
     installPhase = ''
       runHook preInstall
       mkdir -p $out/share/pi $out/bin
       cp -r . $out/share/pi/
       chmod +x $out/share/pi/pi
-      ln -s $out/share/pi/pi $out/bin/pi
+      makeWrapper $out/share/pi/pi $out/bin/pi \
+        --prefix PATH : ${lib.makeBinPath toolDeps}
       runHook postInstall
     '';
 
