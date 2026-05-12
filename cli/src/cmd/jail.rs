@@ -247,7 +247,12 @@ fn which_pi() -> std::io::Result<PathBuf> {
     for dir in path.split(':') {
         let candidate = PathBuf::from(dir).join("pi");
         if candidate.is_file() {
-            return Ok(candidate);
+            // Resolve symlinks so the path we hand bwrap lives under
+            // /nix/store (the only host directory we bind-mount). On NixOS
+            // `$PATH` typically contains `/etc/profiles/per-user/<u>/bin`,
+            // which is a symlink that doesn't exist inside the jail's
+            // mount namespace — exec'ing it fails with ENOENT.
+            return candidate.canonicalize();
         }
     }
     Err(io_error("'pi' not found on PATH"))
