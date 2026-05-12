@@ -219,7 +219,7 @@ interleaving pushed events with command/reply traffic.
     homeConfigurations.user = home-manager.lib.homeManagerConfiguration {
       modules = [
         tau.homeManagerModules.default
-        { services.tau.enable = true; }
+        { programs.tau.enable = true; }
       ];
     };
   };
@@ -228,19 +228,23 @@ interleaving pushed events with command/reply traffic.
 
 ### Module options
 
-`homeManagerModules.default` exposes under `services.tau` (the main
-thing the user-side module does is run `tau serve` as a systemd user
-unit):
+`homeManagerModules.default` exposes under `programs.tau`:
 
-| option              | type     | default                  | purpose                                            |
-|---------------------|----------|--------------------------|----------------------------------------------------|
-| `enable`            | bool     | `false`                  | install `tau`, `pi`, the extension symlink, run `tau serve` |
-| `package`           | package  | flake's `tau`            | override the tau binary                            |
-| `installPi`         | bool     | `true`                   | put pi on PATH too                                 |
-| `pi`                | package  | flake's `pi`             | override pi                                        |
-| `installExtension`  | bool     | `true`                   | symlink the extension into `~/.pi/agent/extensions/tau` |
-| `extension`         | package  | flake's `tau-extension`  | override the extension package                     |
-| `service.enable`    | bool     | `true`                   | run `tau serve` as a systemd user service          |
+| option                 | type                       | default                   | purpose                                                                       |
+|------------------------|----------------------------|---------------------------|-------------------------------------------------------------------------------|
+| `enable`               | bool                       | `false`                   | install `tau`, `pi`, the extension symlink, run `tau serve`                   |
+| `package`              | package                    | flake's `tau`             | override the tau binary                                                       |
+| `installPi`            | bool                       | `true`                    | put pi on PATH too                                                            |
+| `pi`                   | package                    | flake's `pi` (rewrapped)  | override pi (default re-wraps with `toolDeps` via `makeWrapper`)              |
+| `toolDeps`             | list of package            | `[pkgs.fd pkgs.ripgrep]`  | tools pi needs on PATH inside the jail; threaded into pi's wrapper            |
+| `installExtension`     | bool                       | `true`                    | symlink the bundled tau extension into `~/.pi/agent/extensions/tau`           |
+| `extension`            | package                    | flake's `tau-extension`   | override the bundled tau extension                                            |
+| `extensions`           | attrset of name → src      | `{}`                      | extra extensions to symlink into `~/.pi/agent/extensions/<name>/`             |
+| `skills`               | attrset of name → src      | `{}`                      | agent skills to symlink into `~/.pi/agent/skills/<name>/` (see agentskills.io)|
+| `settings`             | attrset                    | `{}`                      | written as JSON to `~/.pi/agent/settings.json` (see pi docs/settings.md)      |
+| `systemPrompt`         | nullable lines             | `null`                    | replace pi's default prompt; written to `~/.pi/agent/SYSTEM.md` when set      |
+| `appendSystemPrompt`   | nullable lines             | `null`                    | append to pi's default prompt; written to `~/.pi/agent/APPEND_SYSTEM.md`      |
+| `enableService`        | bool                       | `true`                    | run `tau serve` as a systemd user service                                     |
 
 `nixosModules.default` exposes under `programs.tau`:
 

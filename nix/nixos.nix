@@ -10,9 +10,9 @@
 #
 # Naming note: this module lives under `programs.tau`, parallel to
 # `programs.firejail` (also a sandbox-support module that installs a
-# binary and tunes a kernel feature). The home-manager module is
-# `services.tau` instead, since on the user side the main thing
-# happening is a systemd user unit running `tau serve`.
+# binary and tunes a kernel feature). The home-manager module uses
+# the same `programs.tau` namespace — they're separate option trees on
+# different evaluation passes, so there's no collision.
 {
   config,
   lib,
