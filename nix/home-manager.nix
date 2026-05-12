@@ -61,13 +61,9 @@ in {
       [cfg.package]
       ++ lib.optional cfg.installPi cfg.pi;
 
-    home.file = lib.mkIf cfg.installExtension {
-      ".pi/agent/extensions/tau".source = "${cfg.extension}/share/tau-extension";
+    home.file.".pi/agent/extensions/tau" = lib.mkIf cfg.installExtension {
+      source = "${cfg.extension}/share/tau-extension";
     };
-
-    systemd.user.services.tau = lib.mkIf cfg.service.enable (
-      import ./systemd-unit.nix {tauPackage = cfg.package;}
-    );
 
     # The systemd unit's `ReadWritePaths=%h/.config/tau` requires the
     # directory to exist before the service starts — systemd's mount
@@ -75,7 +71,12 @@ in {
     # fails with `status=226/NAMESPACE`. We create an empty `.keep` file so
     # home-manager materializes the directory at activation time. The
     # daemon writes `allow.json` (and optionally `audit.log`) inside.
-    home.file.".config/tau/.keep" =
-      lib.mkIf cfg.service.enable {text = "";};
+    home.file.".config/tau/.keep" = lib.mkIf cfg.service.enable {
+      text = "";
+    };
+
+    systemd.user.services.tau = lib.mkIf cfg.service.enable (
+      import ./systemd-unit.nix {tauPackage = cfg.package;}
+    );
   };
 }
