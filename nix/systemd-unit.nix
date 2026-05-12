@@ -31,7 +31,12 @@
     NoNewPrivileges = true;
     ProtectSystem = "strict";
     ProtectHome = "read-only";
-    ReadWritePaths = ["%h/.config/tau"];
+    # %h/.config/tau — allow.json (and optionally audit.log) live here.
+    # %t           — $XDG_RUNTIME_DIR; the mgmt socket binds at %t/tau.sock.
+    #                Without this, the daemon's UnixListener::bind returns
+    #                EROFS because ProtectSystem=strict makes /run read-only
+    #                in the service's mount namespace.
+    ReadWritePaths = ["%h/.config/tau" "%t"];
     RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
     RestrictNamespaces = true;
     LockPersonality = true;
