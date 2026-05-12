@@ -24,7 +24,8 @@ const MARKER_HEADER = "x-pi-firewall-status"; // lowercased; fetch headers are c
 const DEFAULT_PORT = 443;
 const MAX_RETRY_ATTEMPTS = 3;
 const EVENTS_RECONNECT_DELAY_MS = 2_000;
-const FETCH_TIMEOUT_MS = 30_000;
+const FETCH_TIMEOUT_MS = 10_000;
+const MGMT_TIMEOUT_MS = 5_000;
 
 // ---------------- mgmt socket client ----------------
 
@@ -67,6 +68,11 @@ function sendMgmt(cmd: MgmtCmd): Promise<MgmtReply> {
     const socket = connect(socketPath());
     let buf = "";
     socket.setEncoding("utf-8");
+    socket.setTimeout(MGMT_TIMEOUT_MS);
+    socket.on("timeout", () => {
+      socket.destroy();
+      reject(new Error("mgmt socket timed out"));
+    });
     socket.on("data", (chunk) => {
       buf += chunk;
     });
@@ -395,24 +401,33 @@ export default function (pi: ExtensionAPI) {
           if (choice === "Allow once (session)" || choice === "Allow always (persist)") {
             const cmd = choice === "Allow once (session)" ? "add_session" : "add_persist";
             ctx.ui.setWorkingMessage(`Adding ${host} to allowlist…`);
+            let added = false;
             try {
               await sendMgmt({ cmd, host });
               ctx.ui.setWorkingMessage();
+              added = true;
             } catch (err) {
               ctx.ui.setWorkingMessage();
               const msg = (err as Error).message;
               // The daemon may have persisted the entry before closing the
-              // connection. Retry the fetch — if the add worked we succeed;
-              // if not we get another denied-unknown-host and loop again.
+              // connection — treat as likely success and still offer retry.
               if (msg.includes("daemon closed connection without replying")) {
-                continue;
+                added = true;
+              } else {
+                return {
+                  content: [{ type: "text", text: `Failed to update allowlist: ${msg}` }],
+                  details: { error: true },
+                };
               }
+            }
+            if (added) {
+              const retry = await ctx.ui.confirm(`Added ${host} to allowlist`, "Retry the fetch now?");
+              if (retry) continue;
               return {
-                content: [{ type: "text", text: `Failed to update allowlist: ${msg}` }],
-                details: { error: true },
+                content: [{ type: "text", text: `${host} added to allowlist; fetch skipped.` }],
+                details: { host },
               };
             }
-            continue; // retry the request
           }
           // "Deny" or selector dismissed
           return {
