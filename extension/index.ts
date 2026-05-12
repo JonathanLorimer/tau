@@ -24,6 +24,7 @@ const MARKER_HEADER = "x-pi-firewall-status"; // lowercased; fetch headers are c
 const DEFAULT_PORT = 443;
 const MAX_RETRY_ATTEMPTS = 3;
 const EVENTS_RECONNECT_DELAY_MS = 2_000;
+const FETCH_TIMEOUT_MS = 30_000;
 
 // ---------------- mgmt socket client ----------------
 
@@ -318,10 +319,14 @@ export default function (pi: ExtensionAPI) {
       for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
         let response: Awaited<ReturnType<typeof fetch>>;
         try {
+          // Combine the caller's abort signal with a hard timeout so a
+          // slow/hung proxy or upstream doesn't stall the agent forever.
+          const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+          const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
           response = await fetch(params.url, {
             method,
             dispatcher: new ProxyAgent(PROXY_URL),
-            signal,
+            signal: combinedSignal,
           });
         } catch (err) {
           return {
@@ -387,23 +392,23 @@ export default function (pi: ExtensionAPI) {
             "Deny",
           ]);
 
-          if (choice === "Allow once (session)") {
+          if (choice === "Allow once (session)" || choice === "Allow always (persist)") {
+            const cmd = choice === "Allow once (session)" ? "add_session" : "add_persist";
+            ctx.ui.setWorkingMessage(`Adding ${host} to allowlist…`);
             try {
-              await sendMgmt({ cmd: "add_session", host });
+              await sendMgmt({ cmd, host });
+              ctx.ui.setWorkingMessage();
             } catch (err) {
+              ctx.ui.setWorkingMessage();
+              const msg = (err as Error).message;
+              // The daemon may have persisted the entry before closing the
+              // connection. Retry the fetch — if the add worked we succeed;
+              // if not we get another denied-unknown-host and loop again.
+              if (msg.includes("daemon closed connection without replying")) {
+                continue;
+              }
               return {
-                content: [{ type: "text", text: `Failed to update allowlist: ${(err as Error).message}` }],
-                details: { error: true },
-              };
-            }
-            continue; // retry the request
-          }
-          if (choice === "Allow always (persist)") {
-            try {
-              await sendMgmt({ cmd: "add_persist", host });
-            } catch (err) {
-              return {
-                content: [{ type: "text", text: `Failed to update allowlist: ${(err as Error).message}` }],
+                content: [{ type: "text", text: `Failed to update allowlist: ${msg}` }],
                 details: { error: true },
               };
             }
