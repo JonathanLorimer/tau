@@ -29,14 +29,13 @@ const EVENTS_RECONNECT_DELAY_MS = 2_000;
 
 interface Entry {
   host: string;
-  port: number;
 }
 
 type MgmtCmd =
   | { cmd: "list" }
-  | { cmd: "add_session"; host: string; port: number }
-  | { cmd: "add_persist"; host: string; port: number }
-  | { cmd: "remove"; host: string; port: number }
+  | { cmd: "add_session"; host: string }
+  | { cmd: "add_persist"; host: string }
+  | { cmd: "remove"; host: string }
   | { cmd: "subscribe_events" };
 
 type MgmtReply =
@@ -71,10 +70,24 @@ function sendMgmt(cmd: MgmtCmd): Promise<MgmtReply> {
       buf += chunk;
     });
     socket.on("end", () => {
+      const trimmed = buf.trim();
+      if (!trimmed) {
+        // Empty reply means the daemon closed the socket before writing.
+        // The mutation may have already succeeded on the daemon side
+        // (it persists allow.json before constructing the reply), so the
+        // resulting state is ambiguous. Surface that explicitly instead
+        // of dressing it up as a JSON parse error.
+        reject(
+          new Error(
+            "daemon closed connection without replying; the operation may have succeeded — verify with /firewall-list",
+          ),
+        );
+        return;
+      }
       try {
-        resolve(JSON.parse(buf.trim()) as MgmtReply);
+        resolve(JSON.parse(trimmed) as MgmtReply);
       } catch (err) {
-        reject(err);
+        reject(new Error(`daemon returned unparseable reply: ${(err as Error).message}`));
       }
     });
     socket.on("error", reject);
@@ -88,34 +101,16 @@ function sendMgmt(cmd: MgmtCmd): Promise<MgmtReply> {
 // ---------------- helpers ----------------
 
 /**
- * Parse `host` or `host:port` (or two whitespace-separated tokens).
- * Returns `null` on invalid input.
+ * Normalize a slash-command argument to a bare hostname. Strips an optional
+ * `:port` suffix (a leftover from older usage), trims whitespace, and
+ * returns `null` on empty input. The proxy is HTTPS-only so port is
+ * meaningless in the allowlist.
  */
-function parseTarget(args: string): { host: string; port: number } | null {
-  const trimmed = args.trim();
+function parseHost(args: string): string | null {
+  const trimmed = args.trim().split(/\s+/)[0]?.trim();
   if (!trimmed) return null;
-
-  // First try whitespace-separated: "github.com 443"
-  const ws = trimmed.split(/\s+/);
-  if (ws.length === 2) {
-    const port = Number.parseInt(ws[1], 10);
-    if (!Number.isNaN(port) && ws[0]) return { host: ws[0], port };
-    return null;
-  }
-  if (ws.length === 1) {
-    const single = ws[0];
-    // Then try host:port
-    const colon = single.lastIndexOf(":");
-    if (colon > 0 && colon < single.length - 1) {
-      const port = Number.parseInt(single.slice(colon + 1), 10);
-      if (!Number.isNaN(port)) {
-        return { host: single.slice(0, colon), port };
-      }
-    }
-    // Bare host — default port
-    return { host: single, port: DEFAULT_PORT };
-  }
-  return null;
+  const colon = trimmed.lastIndexOf(":");
+  return colon > 0 ? trimmed.slice(0, colon) : trimmed;
 }
 
 // ---------------- escape-attempt event subscriber ----------------
@@ -238,7 +233,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("Allowlist is empty", "info");
           return;
         }
-        const lines = reply.entries.map((e) => `  ${e.host}:${e.port}`).join("\n");
+        const lines = reply.entries.map((e) => `  ${e.host}`).join("\n");
         ctx.ui.notify(`Allowlist (${reply.entries.length} entries):\n${lines}`, "info");
       } catch (err) {
         ctx.ui.notify(`Failed to contact tau daemon: ${(err as Error).message}`, "error");
@@ -247,17 +242,17 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("firewall-add", {
-    description: "Add HOST[:PORT] (or 'HOST PORT') to the tau allowlist; persistent by default",
+    description: "Add HOST to the tau allowlist; persistent by default",
     handler: async (args, ctx) => {
-      const target = parseTarget(args);
-      if (!target) {
-        ctx.ui.notify("Usage: /firewall-add HOST[:PORT]   (default port 443)", "error");
+      const host = parseHost(args);
+      if (!host) {
+        ctx.ui.notify("Usage: /firewall-add HOST", "error");
         return;
       }
       try {
-        const reply = await sendMgmt({ cmd: "add_persist", ...target });
+        const reply = await sendMgmt({ cmd: "add_persist", host });
         if (reply.ok) {
-          ctx.ui.notify(`Added ${target.host}:${target.port} to the allowlist`, "info");
+          ctx.ui.notify(`Added ${host} to the allowlist`, "info");
         } else {
           ctx.ui.notify("tau daemon returned ok=false", "error");
         }
@@ -268,17 +263,17 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("firewall-remove", {
-    description: "Remove HOST[:PORT] (or 'HOST PORT') from the tau allowlist",
+    description: "Remove HOST from the tau allowlist",
     handler: async (args, ctx) => {
-      const target = parseTarget(args);
-      if (!target) {
-        ctx.ui.notify("Usage: /firewall-remove HOST[:PORT]   (default port 443)", "error");
+      const host = parseHost(args);
+      if (!host) {
+        ctx.ui.notify("Usage: /firewall-remove HOST", "error");
         return;
       }
       try {
-        const reply = await sendMgmt({ cmd: "remove", ...target });
+        const reply = await sendMgmt({ cmd: "remove", host });
         if (reply.ok) {
-          ctx.ui.notify(`Removed ${target.host}:${target.port} from the allowlist`, "info");
+          ctx.ui.notify(`Removed ${host} from the allowlist`, "info");
         } else {
           ctx.ui.notify("tau daemon returned ok=false", "error");
         }
@@ -379,14 +374,14 @@ export default function (pi: ExtensionAPI) {
               content: [
                 {
                   type: "text",
-                  text: `${host}:${port} is not in the tau allowlist, and there's no UI available to prompt for approval. Add it from a separate terminal via 'tau ctl add ${host} ${port}' and retry.`,
+                  text: `${host} is not in the tau allowlist, and there's no UI available to prompt for approval. Add it from a separate terminal via 'tau ctl add ${host}' and retry.`,
                 },
               ],
-              details: { blocked: "unknown-host-no-ui", host, port },
+              details: { blocked: "unknown-host-no-ui", host },
             };
           }
 
-          const choice = await ctx.ui.select(`Allow ${host}:${port}?`, [
+          const choice = await ctx.ui.select(`Allow ${host}?`, [
             "Allow once (session)",
             "Allow always (persist)",
             "Deny",
@@ -394,7 +389,7 @@ export default function (pi: ExtensionAPI) {
 
           if (choice === "Allow once (session)") {
             try {
-              await sendMgmt({ cmd: "add_session", host, port });
+              await sendMgmt({ cmd: "add_session", host });
             } catch (err) {
               return {
                 content: [{ type: "text", text: `Failed to update allowlist: ${(err as Error).message}` }],
@@ -405,7 +400,7 @@ export default function (pi: ExtensionAPI) {
           }
           if (choice === "Allow always (persist)") {
             try {
-              await sendMgmt({ cmd: "add_persist", host, port });
+              await sendMgmt({ cmd: "add_persist", host });
             } catch (err) {
               return {
                 content: [{ type: "text", text: `Failed to update allowlist: ${(err as Error).message}` }],
@@ -416,8 +411,8 @@ export default function (pi: ExtensionAPI) {
           }
           // "Deny" or selector dismissed
           return {
-            content: [{ type: "text", text: `User denied access to ${host}:${port}` }],
-            details: { blocked: "user-denied", host, port },
+            content: [{ type: "text", text: `User denied access to ${host}` }],
+            details: { blocked: "user-denied", host },
           };
         }
 

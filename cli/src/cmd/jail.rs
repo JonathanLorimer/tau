@@ -150,9 +150,21 @@ pub fn run(args: Args) -> std::io::Result<()> {
     let mut cmd = Command::new("bwrap");
 
     cmd.args([
-        "--unshare-all",      // unshare every namespace by default (mount, pid, ipc, uts, cgroup, user, net)
-        "--share-net",        // …except network — we still need to talk to the local proxy
-        "--unshare-user",     // private user namespace lets us remap our uid without root
+        // Unshare every namespace except PID and net. bwrap has no --share-pid
+        // flag, so we list the ones we want explicitly. Mount namespace is
+        // always created implicitly by bwrap (no --unshare-mount flag exists).
+        "--unshare-user",     // private user ns lets us remap uid without root
+        "--unshare-uts",      // own hostname/domain
+        "--unshare-ipc",      // own SysV IPC, POSIX message queues
+        "--unshare-cgroup-try", // own cgroup namespace if the host supports it
+        "--disable-userns",     // prevent nested user namespace creation inside the jail
+        // PID namespace deliberately shared: pi-inside-the-jail needs to
+        // see host processes for legitimate developer workflows (PID-file
+        // liveness checks like `ghciwatch`, `ps`/`top`, attaching debuggers
+        // to host services, etc.). Process *control* is still isolated by
+        // UID — UID 5555 can't signal UID 1000-owned processes.
+        // Net namespace deliberately shared: we need to reach the local
+        // proxy at 127.0.0.1:8118.
         "--die-with-parent",  // SIGKILL the jail if our process dies (no orphan jails)
         "--new-session",      // fresh session id; mitigates TIOCSTI escapes back to the parent tty
         "--clearenv",         // drop every inherited env var; we re-add only the allowlist below
@@ -200,10 +212,11 @@ pub fn run(args: Args) -> std::io::Result<()> {
     // Profile dirs (/etc/profiles, /run/current-system, /run/wrappers) are
     // deliberately not bound. pi is wrapped by `nix/pi.nix` via makeWrapper
     // so its `$PATH` is prefixed with canonical /nix/store paths for its
-    // configured tool deps — pi finds fd/ripgrep/etc. by store-path, not
-    // by walking the host profile tree. Combined with `which_pi`
-    // canonicalize'ing the launch path, the jail's only host-FS reach
-    // outside /etc/* below is the read-only /nix/store mount.
+    // configured tool deps. The inherited host $PATH still works for any
+    // entry that points directly at /nix/store/.../bin — `nix develop`'s
+    // `buildInputs` use that shape, so dev-shell tools are reachable
+    // without binding the host profile dirs. The agent's only host-FS
+    // reach outside /etc/* below is the read-only /nix/store mount.
 
     // /etc files we need; -try means "skip silently if missing" — handy because
     // /etc/static is a NixOS-ism and won't exist on other distros.

@@ -20,38 +20,32 @@ pub struct Args {
 enum CtlCommand {
     /// List entries in the persistent allowlist.
     List,
-    /// Add an entry. Persistent by default.
+    /// Add a host. Persistent by default.
     Add {
         host: String,
-        #[arg(default_value_t = 443)]
-        port: u16,
         /// Add only for the current daemon session, not to disk.
         #[arg(long)]
         session: bool,
     },
-    /// Remove an entry from both session and persistent sets.
-    Remove {
-        host: String,
-        #[arg(default_value_t = 443)]
-        port: u16,
-    },
+    /// Remove a host from both session and persistent sets.
+    Remove { host: String },
     /// Add the default seed host list (anthropic, github, npm, crates, pypi, …).
     Seed,
 }
 
-const DEFAULT_SEEDS: &[(&str, u16)] = &[
-    ("api.anthropic.com", 443),
-    ("api.openai.com", 443),
-    ("github.com", 443),
-    ("api.github.com", 443),
-    ("objects.githubusercontent.com", 443),
-    ("raw.githubusercontent.com", 443),
-    ("registry.npmjs.org", 443),
-    ("crates.io", 443),
-    ("static.crates.io", 443),
-    ("index.crates.io", 443),
-    ("pypi.org", 443),
-    ("files.pythonhosted.org", 443),
+const DEFAULT_SEEDS: &[&str] = &[
+    "api.anthropic.com",
+    "api.openai.com",
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "raw.githubusercontent.com",
+    "registry.npmjs.org",
+    "crates.io",
+    "static.crates.io",
+    "index.crates.io",
+    "pypi.org",
+    "files.pythonhosted.org",
 ];
 
 pub async fn run(args: Args) -> std::io::Result<()> {
@@ -61,32 +55,31 @@ pub async fn run(args: Args) -> std::io::Result<()> {
         CtlCommand::List => match send(&socket, &Command::List).await? {
             Reply::Entries { entries, .. } => {
                 for e in entries {
-                    println!("{}:{}", e.host, e.port);
+                    println!("{}", e.host);
                 }
             }
             Reply::Simple { ok } => {
                 return Err(io_error(format!("unexpected simple reply (ok={ok})")));
             }
         },
-        CtlCommand::Add { host, port, session } => {
+        CtlCommand::Add { host, session } => {
             let cmd = if session {
-                Command::AddSession { host, port }
+                Command::AddSession { host }
             } else {
-                Command::AddPersist { host, port }
+                Command::AddPersist { host }
             };
             expect_ok(send(&socket, &cmd).await?)?;
             println!("ok");
         }
-        CtlCommand::Remove { host, port } => {
-            expect_ok(send(&socket, &Command::Remove { host, port }).await?)?;
+        CtlCommand::Remove { host } => {
+            expect_ok(send(&socket, &Command::Remove { host }).await?)?;
             println!("ok");
         }
         CtlCommand::Seed => {
             let mut added = 0;
-            for (host, port) in DEFAULT_SEEDS {
+            for host in DEFAULT_SEEDS {
                 let cmd = Command::AddPersist {
                     host: (*host).to_string(),
-                    port: *port,
                 };
                 expect_ok(send(&socket, &cmd).await?)?;
                 added += 1;

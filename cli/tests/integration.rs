@@ -224,7 +224,7 @@ async fn list_is_initially_empty() {
 async fn add_persist_then_list_shows_entry() {
     let h = Harness::start().await.unwrap();
     let ack = h
-        .mgmt(json!({"cmd": "add_persist", "host": "github.com", "port": 443}))
+        .mgmt(json!({"cmd": "add_persist", "host": "github.com"}))
         .await
         .unwrap();
     assert_eq!(ack, json!({"ok": true}));
@@ -232,7 +232,7 @@ async fn add_persist_then_list_shows_entry() {
     let reply = h.mgmt(json!({"cmd": "list"})).await.unwrap();
     assert_eq!(
         reply,
-        json!({"ok": true, "entries": [{"host": "github.com", "port": 443}]})
+        json!({"ok": true, "entries": [{"host": "github.com"}]})
     );
 }
 
@@ -240,7 +240,7 @@ async fn add_persist_then_list_shows_entry() {
 async fn add_session_is_not_in_persistent_list() {
     let h = Harness::start().await.unwrap();
     let ack = h
-        .mgmt(json!({"cmd": "add_session", "host": "ephemeral.example", "port": 443}))
+        .mgmt(json!({"cmd": "add_session", "host": "ephemeral.example"}))
         .await
         .unwrap();
     assert_eq!(ack, json!({"ok": true}));
@@ -253,10 +253,10 @@ async fn add_session_is_not_in_persistent_list() {
 #[tokio::test]
 async fn remove_clears_persistent_entry() {
     let h = Harness::start().await.unwrap();
-    h.mgmt(json!({"cmd": "add_persist", "host": "a.example", "port": 443}))
+    h.mgmt(json!({"cmd": "add_persist", "host": "a.example"}))
         .await
         .unwrap();
-    h.mgmt(json!({"cmd": "remove", "host": "a.example", "port": 443}))
+    h.mgmt(json!({"cmd": "remove", "host": "a.example"}))
         .await
         .unwrap();
     let reply = h.mgmt(json!({"cmd": "list"})).await.unwrap();
@@ -290,7 +290,7 @@ async fn persistent_entries_survive_restart() {
     wait_for_listeners(&socket, &addr1, &hp1).await.unwrap();
     send_mgmt(
         &socket,
-        json!({"cmd": "add_persist", "host": "persistent.example", "port": 443}),
+        json!({"cmd": "add_persist", "host": "persistent.example"}),
     )
     .await
     .unwrap();
@@ -307,7 +307,7 @@ async fn persistent_entries_survive_restart() {
         reply,
         json!({
             "ok": true,
-            "entries": [{"host": "persistent.example", "port": 443}],
+            "entries": [{"host": "persistent.example"}],
         })
     );
     p2.kill().await.unwrap();
@@ -366,7 +366,7 @@ async fn proxy_denies_unknown_host_with_marker() {
 async fn proxy_denies_non_https_with_marker() {
     let h = Harness::start().await.unwrap();
     // Even if we allowlist host:80, the HTTPS-only check should win.
-    h.mgmt(json!({"cmd": "add_session", "host": "example.com", "port": 80}))
+    h.mgmt(json!({"cmd": "add_session", "host": "example.com"}))
         .await
         .unwrap();
     let (status, marker) = h.connect("CONNECT example.com:80 HTTP/1.1").await.unwrap();
@@ -390,7 +390,7 @@ async fn session_add_unlocks_for_unknown_host_marker() {
     // the daemon no longer returns 403 for that destination.
     let h = Harness::start().await.unwrap();
     let port = pick_local_port().port();
-    h.mgmt(json!({"cmd": "add_session", "host": "127.0.0.1", "port": port}))
+    h.mgmt(json!({"cmd": "add_session", "host": "127.0.0.1"}))
         .await
         .unwrap();
 
@@ -405,11 +405,9 @@ async fn session_add_unlocks_for_unknown_host_marker() {
 
 // ---------- honeypot + events stream ----------
 
-/// Pull the next event line from a subscriber, with a 2s ceiling so a
-/// missing event surfaces as a test failure rather than a hang.
 async fn next_event(reader: &mut BufReader<UnixStream>) -> std::io::Result<Value> {
     let mut line = String::new();
-    let n = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+    let n = tokio::time::timeout(EVENT_TIMEOUT, reader.read_line(&mut line))
         .await
         .map_err(|_| std::io::Error::other("timed out waiting for event"))??;
     if n == 0 {
@@ -459,6 +457,13 @@ async fn honeypot_dedupes_burst_within_window() {
 }
 
 // ---------- audit log ----------
+
+/// Pull the next event line from a subscriber with a generous ceiling so a
+/// real missing event surfaces as a test failure, while parallel-test load
+/// doesn't trip a flake. The 2s budget the original ceiling used was tight
+/// enough that scheduler jitter under `cargo test`'s default thread pool
+/// occasionally timed out before the daemon got to write the event.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Poll the audit log until it has at least `want` JSON-parseable lines or
 /// the deadline elapses. The audit writer task runs in the daemon and is
@@ -514,7 +519,7 @@ async fn audit_log_records_all_decision_paths() {
     // but the audit record fires before the upstream connect.
     send_mgmt(
         &socket,
-        json!({"cmd": "add_session", "host": "127.0.0.1", "port": 443}),
+        json!({"cmd": "add_session", "host": "127.0.0.1"}),
     )
     .await
     .unwrap();

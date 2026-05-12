@@ -15,9 +15,9 @@ use crate::honeypot::EventTx;
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     List,
-    AddSession { host: String, port: u16 },
-    AddPersist { host: String, port: u16 },
-    Remove { host: String, port: u16 },
+    AddSession { host: String },
+    AddPersist { host: String },
+    Remove { host: String },
     /// Switch *this connection* into events-stream mode. After the daemon
     /// acks with `{"ok":true}`, the read half is abandoned and the daemon
     /// only writes — one JSON event per line (see `honeypot::Event`) until
@@ -84,7 +84,6 @@ async fn handle(
         if !trimmed.is_empty() {
             match serde_json::from_str::<Command>(trimmed) {
                 Ok(Command::SubscribeEvents) => {
-                    writer.write_all(b"{\"ok\":true}\n").await?;
                     return stream_events(writer, events).await;
                 }
                 Ok(cmd) => {
@@ -108,8 +107,14 @@ async fn handle(
 /// Drain the broadcast channel to the writer half until the writer fails or
 /// the channel closes. Lagged subscribers are logged but kept alive; missing
 /// an event is preferable to tearing down the subscription.
+///
+/// Ordering: subscribe to the channel *before* sending the ack. If we
+/// ack'd first there'd be a small window where the client treats the
+/// subscription as live, but no `Receiver` is attached yet — a honeypot
+/// event in that window would be lost.
 async fn stream_events(mut writer: OwnedWriteHalf, events: EventTx) -> std::io::Result<()> {
     let mut rx = events.subscribe();
+    writer.write_all(b"{\"ok\":true}\n").await?;
     loop {
         match rx.recv().await {
             Ok(event) => {
@@ -134,13 +139,13 @@ async fn dispatch(cmd: Command, allowlist: &Arc<RwLock<Allowlist>>) -> Reply {
             let entries = allowlist.read().await.entries();
             Reply::Entries { ok: true, entries }
         }
-        Command::AddSession { host, port } => {
-            allowlist.write().await.add_session(host, port);
+        Command::AddSession { host } => {
+            allowlist.write().await.add_session(host);
             Reply::Simple { ok: true }
         }
-        Command::AddPersist { host, port } => {
+        Command::AddPersist { host } => {
             let mut guard = allowlist.write().await;
-            match guard.add_persist(host, port).await {
+            match guard.add_persist(host).await {
                 Ok(()) => Reply::Simple { ok: true },
                 Err(e) => {
                     tracing::error!("failed to persist allowlist: {e}");
@@ -148,9 +153,9 @@ async fn dispatch(cmd: Command, allowlist: &Arc<RwLock<Allowlist>>) -> Reply {
                 }
             }
         }
-        Command::Remove { host, port } => {
+        Command::Remove { host } => {
             let mut guard = allowlist.write().await;
-            match guard.remove(&host, port).await {
+            match guard.remove(&host).await {
                 Ok(()) => Reply::Simple { ok: true },
                 Err(e) => {
                     tracing::error!("failed to update allowlist: {e}");

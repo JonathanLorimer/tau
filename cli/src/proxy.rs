@@ -101,7 +101,7 @@ async fn handle(
         return Ok(());
     }
 
-    let source = allowlist.read().await.classify(&host, port);
+    let source = allowlist.read().await.classify(&host);
     let Some(source) = source else {
         tracing::info!(%host, port, "denied");
         audit.record(audit::deny(&host, port, peer, "unknown-host"));

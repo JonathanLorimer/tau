@@ -170,15 +170,15 @@ the same protocol.
 
 ```
 → {"cmd":"list"}
-← {"ok":true,"entries":[{"host":"github.com","port":443}]}
+← {"ok":true,"entries":[{"host":"github.com"}]}
 
-→ {"cmd":"add_session","host":"example.com","port":443}
+→ {"cmd":"add_session","host":"example.com"}
 ← {"ok":true}
 
-→ {"cmd":"add_persist","host":"example.com","port":443}
+→ {"cmd":"add_persist","host":"example.com"}
 ← {"ok":true}
 
-→ {"cmd":"remove","host":"example.com","port":443}
+→ {"cmd":"remove","host":"example.com"}
 ← {"ok":true}
 
 → {"cmd":"subscribe_events"}
@@ -187,6 +187,11 @@ the same protocol.
 ← {"kind":"escape-attempt","ts":"…","host":"5.6.7.8","port":443,"count":1}
 …
 ```
+
+Allowlist entries are *host-only* — port is implicit since the proxy
+is HTTPS-only (architectural anchor #5). Escape events still carry
+port because the honeypot recovers the original destination address
+including the port the bypassing process tried to reach.
 
 `subscribe_events` flips *that connection* into one-way streaming mode.
 The switch is per-connection, not per-daemon — `list`/`add`/`remove`

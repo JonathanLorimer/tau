@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// An allowlist entry. Only the host is stored — the proxy is HTTPS-only
+/// (architectural anchor #5) so by the time classify() runs, the port is
+/// always 443. Older on-disk files include a `port` field; serde silently
+/// drops it on read, and the rewritten file omits it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Entry {
     pub host: String,
-    pub port: u16,
 }
 
 pub struct Allowlist {
@@ -51,12 +54,12 @@ impl Allowlist {
         })
     }
 
-    /// Returns which set (persistent vs session) holds the entry, or
-    /// `None` if neither does. Persistent is checked first: an entry
+    /// Returns which set (persistent vs session) holds the host, or
+    /// `None` if neither does. Persistent is checked first: a host
     /// promoted from session to persistent (or duplicated across both)
     /// classifies as `persistent`.
-    pub fn classify(&self, host: &str, port: u16) -> Option<Source> {
-        let entry = Entry { host: host.to_owned(), port };
+    pub fn classify(&self, host: &str) -> Option<Source> {
+        let entry = Entry { host: host.to_owned() };
         if self.persistent.contains(&entry) {
             Some(Source::Persistent)
         } else if self.session.contains(&entry) {
@@ -66,17 +69,17 @@ impl Allowlist {
         }
     }
 
-    pub fn add_session(&mut self, host: String, port: u16) {
-        self.session.insert(Entry { host, port });
+    pub fn add_session(&mut self, host: String) {
+        self.session.insert(Entry { host });
     }
 
-    pub async fn add_persist(&mut self, host: String, port: u16) -> std::io::Result<()> {
-        self.persistent.insert(Entry { host, port });
+    pub async fn add_persist(&mut self, host: String) -> std::io::Result<()> {
+        self.persistent.insert(Entry { host });
         self.save().await
     }
 
-    pub async fn remove(&mut self, host: &str, port: u16) -> std::io::Result<()> {
-        let entry = Entry { host: host.to_owned(), port };
+    pub async fn remove(&mut self, host: &str) -> std::io::Result<()> {
+        let entry = Entry { host: host.to_owned() };
         self.session.remove(&entry);
         if self.persistent.remove(&entry) {
             self.save().await?;
