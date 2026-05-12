@@ -194,6 +194,8 @@ pub fn run(args: Args) -> std::io::Result<()> {
     }
 
     cmd.args(["--ro-bind", "/nix/store", "/nix/store"]); // every binary we exec lives here, ro
+    cmd.args(["--proc", "/proc"]); // fresh procfs; JIT (bun's JSC) reads /proc/self/maps
+    cmd.args(["--dev", "/dev"]);   // minimal /dev (null, zero, random, urandom, tty)
 
     // /etc files we need; -try means "skip silently if missing" — handy because
     // /etc/static is a NixOS-ism and won't exist on other distros.
