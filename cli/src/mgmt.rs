@@ -34,6 +34,10 @@ pub enum Command {
     /// two protocols on separate sockets sidesteps the framing problem of
     /// interleaving pushed events with command/reply traffic.
     SubscribeEvents,
+    /// Ask the host daemon to open a URL in the user's browser. Used by the
+    /// xdg-open shim bound into the jail so MCP OAuth flows can launch a
+    /// browser without the jail needing direct display access.
+    OpenUrl { url: String },
 }
 
 // Untagged so replies serialize as plain JSON objects. Do not add a serde tag
@@ -193,6 +197,21 @@ async fn dispatch(cmd: Command, allowlist: &Arc<RwLock<Allowlist>>) -> Reply {
                 Ok(()) => Reply::Simple { ok: true },
                 Err(e) => {
                     tracing::error!("failed to update allowlist: {e}");
+                    Reply::Simple { ok: false }
+                }
+            }
+        }
+        Command::OpenUrl { url } => {
+            // Only https:// URLs — prevents the jail from using xdg-open to
+            // open local files or trigger non-browser handlers.
+            if !url.starts_with("https://") {
+                tracing::warn!("rejected non-https open_url: {url}");
+                return Reply::Simple { ok: false };
+            }
+            match tokio::process::Command::new("xdg-open").arg(&url).spawn() {
+                Ok(_) => Reply::Simple { ok: true },
+                Err(e) => {
+                    tracing::error!("xdg-open failed: {e}");
                     Reply::Simple { ok: false }
                 }
             }

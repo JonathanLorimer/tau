@@ -213,6 +213,11 @@ pub fn run(args: Args) -> std::io::Result<()> {
         cmd.args(["--setenv", "LANG", "C.UTF-8"]);
     }
 
+    // Prepend /tau-shims to PATH so the xdg-open shim wins over any real
+    // xdg-open that might appear in the inherited /nix/store paths.
+    let host_path = std::env::var("PATH").unwrap_or_default();
+    cmd.args(["--setenv", "PATH", &format!("/tau-shims:{host_path}")]);
+
     // Forced overrides go last so they win over anything inherited or fallback'd.
     for (k, v) in ALWAYS_FORCE {
         cmd.args(["--setenv", k, v]);
@@ -246,13 +251,21 @@ pub fn run(args: Args) -> std::io::Result<()> {
     }
 
     // Expose /bin/sh inside the jail. Lots of bundled scripts in npm
-    // packages (e.g. the `open` package's xdg-open) hard-code
-    // `#!/bin/sh`, and without this they fail to exec with a misleading
-    // ENOENT pointing at the script rather than the missing interpreter.
-    // On NixOS /bin/sh is a symlink into /nix/store (already bound RO),
-    // so this resolves correctly; -try keeps things working on systems
-    // that don't ship /bin/sh.
+    // packages hard-code `#!/bin/sh`, and without this they fail to exec
+    // with a misleading ENOENT pointing at the script rather than the
+    // missing interpreter. On NixOS /bin/sh is a symlink into /nix/store
+    // (already bound RO), so this resolves correctly; -try keeps things
+    // working on systems that don't ship /bin/sh.
     cmd.args(["--ro-bind-try", "/bin/sh", "/bin/sh"]);
+
+    // Shim xdg-open so MCP OAuth browser launches route through the daemon
+    // instead of requiring display access in the jail. tau detects argv[0]
+    // ending in "xdg-open" and sends an open_url command to the mgmt socket;
+    // the daemon then calls the real xdg-open on the host side.
+    let tau_bin = std::env::current_exe()?.canonicalize()?;
+    let tau_str = tau_bin.to_string_lossy().into_owned();
+    cmd.args(["--dir", "/tau-shims"]);
+    cmd.args(["--ro-bind", &tau_str, "/tau-shims/xdg-open"]);
 
     cmd.args(["--tmpfs", &home]); // fake $HOME backed by tmpfs; hides host dotfiles
 
