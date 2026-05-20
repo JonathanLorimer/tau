@@ -607,6 +607,93 @@ async fn audit_log_off_by_default() {
     // path we want exercised.
 }
 
+// ---------- ctl seed-mcp ----------
+
+/// End-to-end check for `tau ctl seed-mcp <path>`: writes a fixture
+/// `.mcp.json`, runs the CLI against the harness daemon, and verifies
+/// the expected https hosts landed in the persistent allowlist while
+/// stdio entries and non-https urls were skipped.
+#[tokio::test]
+async fn ctl_seed_mcp_adds_https_hosts() {
+    let h = Harness::start().await.unwrap();
+    let tempdir = tempfile::tempdir().unwrap();
+    let mcp_path = tempdir.path().join(".mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{
+            "mcpServers": {
+                "a":  { "url": "https://seed-a.example.test/sse" },
+                "b":  { "url": "https://seed-b.example.test/sse" },
+                "fs": { "command": "true" },
+                "insecure": { "url": "http://seed-c.example.test/" }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tau"))
+        .args(["ctl", "--socket"])
+        .arg(&h.socket_path)
+        .arg("seed-mcp")
+        .arg(&mcp_path)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "seed-mcp failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("seeded 2 host(s) (persistent; 1 stdio skipped)"), "stdout was: {stdout}");
+
+    let reply = h.mgmt(json!({"cmd": "list"})).await.unwrap();
+    let entries = reply.get("entries").and_then(|v| v.as_array()).unwrap();
+    let hosts: Vec<&str> = entries
+        .iter()
+        .filter_map(|e| e.get("host").and_then(|h| h.as_str()))
+        .collect();
+    assert!(hosts.contains(&"seed-a.example.test"), "hosts: {hosts:?}");
+    assert!(hosts.contains(&"seed-b.example.test"), "hosts: {hosts:?}");
+    assert!(!hosts.iter().any(|h| h.contains("seed-c")), "non-https leaked: {hosts:?}");
+}
+
+/// Dry-run must not touch the daemon. We assert by checking the persistent
+/// list is unchanged after the call, and that the planned hosts are printed
+/// on stdout.
+#[tokio::test]
+async fn ctl_seed_mcp_dry_run_does_not_mutate() {
+    let h = Harness::start().await.unwrap();
+    let tempdir = tempfile::tempdir().unwrap();
+    let mcp_path = tempdir.path().join(".mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{ "mcpServers": { "a": { "url": "https://dry.example.test/" } } }"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tau"))
+        .args(["ctl", "--socket"])
+        .arg(&h.socket_path)
+        .args(["seed-mcp", "--dry-run"])
+        .arg(&mcp_path)
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("would add 1 host(s)"), "stdout: {stdout}");
+    assert!(stdout.contains("dry.example.test"), "stdout: {stdout}");
+
+    let reply = h.mgmt(json!({"cmd": "list"})).await.unwrap();
+    assert_eq!(
+        reply,
+        json!({"ok": true, "entries": []}),
+        "dry-run mutated the allowlist"
+    );
+}
+
 #[tokio::test]
 async fn honeypot_survives_publish_with_no_subscribers() {
     // The broadcast send returns Err when no receivers are attached; the

@@ -2,6 +2,7 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::mcp_config;
 use crate::paths;
 
 // Load-bearing: the nftables enforcement rule installed by the NixOS
@@ -111,6 +112,14 @@ pub struct Args {
     #[arg(long, value_name = "LIST", value_delimiter = ',')]
     inherit_env: Vec<String>,
 
+    /// Skip the automatic `.mcp.json` allowlist seed. By default, before
+    /// exec'ing pi the launcher scans the standard MCP config locations
+    /// and persistently allowlists every https host referenced there — it's
+    /// the same logic as `tau ctl seed-mcp`, run silently unless there's
+    /// something to report.
+    #[arg(long)]
+    no_seed_mcp: bool,
+
     /// Arguments forwarded to pi.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pi_args: Vec<String>,
@@ -146,6 +155,10 @@ pub fn run(args: Args) -> std::io::Result<()> {
     })?;
 
     let pi = which_pi()?;
+
+    if !args.no_seed_mcp {
+        seed_mcp(&project, &home);
+    }
 
     let mut cmd = Command::new("bwrap");
 
@@ -232,6 +245,15 @@ pub fn run(args: Args) -> std::io::Result<()> {
         cmd.args(["--ro-bind-try", p, p]);
     }
 
+    // Expose /bin/sh inside the jail. Lots of bundled scripts in npm
+    // packages (e.g. the `open` package's xdg-open) hard-code
+    // `#!/bin/sh`, and without this they fail to exec with a misleading
+    // ENOENT pointing at the script rather than the missing interpreter.
+    // On NixOS /bin/sh is a symlink into /nix/store (already bound RO),
+    // so this resolves correctly; -try keeps things working on systems
+    // that don't ship /bin/sh.
+    cmd.args(["--ro-bind-try", "/bin/sh", "/bin/sh"]);
+
     cmd.args(["--tmpfs", &home]); // fake $HOME backed by tmpfs; hides host dotfiles
 
     let auth_str = auth_dir.to_string_lossy().into_owned();
@@ -263,6 +285,56 @@ pub fn run(args: Args) -> std::io::Result<()> {
 
 fn io_error(msg: impl Into<String>) -> std::io::Error {
     std::io::Error::other(msg.into())
+}
+
+/// Pre-exec allowlist seed from `.mcp.json` files.
+///
+/// Best-effort: failures (daemon down, malformed configs, etc.) print a
+/// warning and the launch proceeds. Aborting the jail because the convenience
+/// seed couldn't complete would be hostile — the extension's runtime prompt
+/// still catches anything we miss, and the user can re-run `tau ctl seed-mcp`
+/// manually once the daemon is healthy.
+fn seed_mcp(project: &std::path::Path, home: &str) {
+    let home_path = PathBuf::from(home);
+    let paths = mcp_config::default_paths(project, &home_path);
+    let scan = mcp_config::scan(&paths);
+
+    for (path, err) in &scan.parse_errors {
+        eprintln!("tau: skipping {}: {}", path.display(), err);
+    }
+    for url in &scan.non_https_skipped {
+        eprintln!("tau: skipping non-https mcp url: {url}");
+    }
+    for url in &scan.unparseable_urls {
+        eprintln!("tau: skipping unparseable mcp url: {url}");
+    }
+
+    if scan.hosts.is_empty() {
+        return;
+    }
+
+    let socket = paths::default_socket();
+    let outcomes = mcp_config::seed_hosts_blocking(&socket, &scan.hosts);
+
+    let mut added = 0usize;
+    let mut failed = 0usize;
+    for (host, outcome) in &outcomes {
+        match outcome {
+            mcp_config::SeedOutcome::Added => added += 1,
+            mcp_config::SeedOutcome::DaemonError(e) => {
+                failed += 1;
+                eprintln!("tau: failed to allowlist {host}: {e}");
+            }
+        }
+    }
+
+    if added > 0 || failed > 0 {
+        eprintln!(
+            "tau: seeded {added} mcp host(s) from {} file(s){}",
+            scan.files_read.len(),
+            if failed > 0 { format!(" ({failed} failed)") } else { String::new() }
+        );
+    }
 }
 
 fn which_pi() -> std::io::Result<PathBuf> {

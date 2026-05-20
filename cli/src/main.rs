@@ -4,6 +4,7 @@ mod allowlist;
 mod audit;
 mod cmd;
 mod honeypot;
+mod mcp_config;
 mod mgmt;
 mod paths;
 mod proxy;

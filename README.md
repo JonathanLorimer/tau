@@ -55,16 +55,22 @@ flake.nix        packages.${system}.{tau, pi, tau-extension}; modules; devShell
   escape-detection honeypot (default `127.0.0.1:8119`). With
   `--audit-log <PATH>` it appends one NDJSON record per CONNECT decision.
 
-- **`tau jail [-C dir] [--auth-dir dir] [--inherit-env LIST] -- [pi-args]`**
+- **`tau jail [-C dir] [--auth-dir dir] [--inherit-env LIST] [--no-seed-mcp] -- [pi-args]`**
   — launches pi inside a bwrap sandbox routed through the daemon. Runs
   as UID 5555 (matches the nftables rule), forces `HTTPS_PROXY` to the
   proxy, mounts `/nix/store` ro, project dir rw, pi's auth dir rw,
-  everything else tmpfs.
+  everything else tmpfs. Before exec'ing pi it auto-seeds the allowlist
+  from any `.mcp.json` it finds in the standard locations
+  (`~/.config/mcp/mcp.json`, `~/.pi/agent/mcp.json`, `$PWD/.mcp.json`,
+  `$PWD/.pi/mcp.json`); pass `--no-seed-mcp` to skip.
 
-- **`tau ctl {list, add, remove, seed}`** — talks to the daemon's mgmt
-  socket to mutate the allowlist. `tau ctl seed` populates the
-  persistent set with the usual hosts (anthropic, openai, github, npm,
-  crates, pypi, …).
+- **`tau ctl {list, add, remove, seed, seed-mcp}`** — talks to the
+  daemon's mgmt socket to mutate the allowlist. `tau ctl seed` populates
+  the persistent set with the usual hosts (anthropic, openai, github,
+  npm, crates, pypi, …). `tau ctl seed-mcp [paths...]` scans MCP config
+  files (defaulting to the standard locations) and persistently
+  allowlists every https host they reference; `--dry-run` and
+  `--session` are supported.
 
 ## Architecture
 

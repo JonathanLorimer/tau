@@ -1,5 +1,8 @@
+use std::io::{BufRead, BufReader as StdBufReader, Write};
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -43,6 +46,37 @@ pub enum Command {
 pub enum Reply {
     Entries { ok: bool, entries: Vec<Entry> },
     Simple { ok: bool },
+}
+
+/// Send one command and read one reply, using a blocking `UnixStream`.
+///
+/// Exists for callers that aren't running inside a tokio runtime — namely
+/// `tau jail`, which pre-seeds the allowlist before `exec`ing pi. The async
+/// equivalent in `cmd::ctl` covers the runtime-bearing CLI path.
+///
+/// `timeout` applies to connect, write, and read independently. The daemon
+/// replies in a single line, so a small budget (a few hundred ms) is plenty;
+/// the point is to avoid hanging the jail launch when the daemon is dead.
+pub fn send_blocking(
+    socket: &Path,
+    cmd: &Command,
+    timeout: Duration,
+) -> std::io::Result<Reply> {
+    let mut stream = StdUnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+
+    let mut payload = serde_json::to_string(cmd).map_err(std::io::Error::other)?;
+    payload.push('\n');
+    stream.write_all(payload.as_bytes())?;
+    // Half-close write so the daemon knows we're done sending. The daemon's
+    // per-connection loop will still write its reply, then close its end.
+    stream.shutdown(std::net::Shutdown::Write)?;
+
+    let mut reader = StdBufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    serde_json::from_str(response.trim()).map_err(std::io::Error::other)
 }
 
 pub async fn run(
