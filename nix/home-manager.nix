@@ -43,8 +43,8 @@ in {
 
     pi = lib.mkOption {
       type = lib.types.package;
-      default = tauPackages.pi.override {inherit (cfg) toolDeps;};
-      defaultText = "tauPackages.pi.override { inherit (cfg) toolDeps; }";
+      default = tauPackages.pi.override {toolDeps = cfg.toolDeps ++ [tauPackages.pi];};
+      defaultText = "tauPackages.pi.override { toolDeps = cfg.toolDeps ++ [ tauPackages.pi ]; }";
       description = ''
         The pi package to install when installPi = true. By default the
         flake's pi is rewrapped with `cfg.toolDeps` on its PATH.
