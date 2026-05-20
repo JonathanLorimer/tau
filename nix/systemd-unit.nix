@@ -37,6 +37,10 @@
     #                EROFS because ProtectSystem=strict makes /run read-only
     #                in the service's mount namespace.
     ReadWritePaths = ["%h/.config/tau" "%t"];
+    # Pass display variables so xdg-open can open a browser when handling
+    # open_url commands routed from the jail's xdg-open shim.
+    PassEnvironment = "DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS";
+
     RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
     RestrictNamespaces = true;
     LockPersonality = true;

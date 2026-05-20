@@ -205,13 +205,14 @@ async fn dispatch(cmd: Command, allowlist: &Arc<RwLock<Allowlist>>) -> Reply {
             // Only https:// URLs — prevents the jail from using xdg-open to
             // open local files or trigger non-browser handlers.
             if !url.starts_with("https://") {
-                tracing::warn!("rejected non-https open_url: {url}");
+                tracing::warn!("open_url rejected non-https url={url}");
                 return Reply::Simple { ok: false };
             }
+            tracing::info!("open_url url={url}");
             match tokio::process::Command::new("xdg-open").arg(&url).spawn() {
                 Ok(_) => Reply::Simple { ok: true },
                 Err(e) => {
-                    tracing::error!("xdg-open failed: {e}");
+                    tracing::error!("open_url xdg-open failed: {e}");
                     Reply::Simple { ok: false }
                 }
             }
