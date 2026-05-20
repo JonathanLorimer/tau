@@ -127,6 +127,19 @@ in {
       '';
     };
 
+    xdgOpenShimPath = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = ''"''${config.home.homeDirectory}/.pi/agent/extensions/pi-mcp-adapter/node_modules/open/xdg-open"'';
+      description = ''
+        Sets `TAU_XDG_SHIM_PATH`. Path of a bundled xdg-open to shadow
+        with the tau shim inside the jail. For npm packages (e.g. the
+        `open` package) that call their bundled xdg-open by absolute path
+        rather than via `$PATH`. The path is canonicalized at launch time,
+        so symlinks into /nix/store are followed automatically.
+      '';
+    };
+
     enableService = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -206,6 +219,10 @@ in {
       // (lib.optionalAttrs cfg.enableService {
         ".config/tau/.keep".text = "";
       });
+
+    home.sessionVariables = lib.optionalAttrs (cfg.xdgOpenShimPath != null) {
+      TAU_XDG_SHIM_PATH = cfg.xdgOpenShimPath;
+    };
 
     systemd.user.services.tau = lib.mkIf cfg.enableService (
       import ./systemd-unit.nix {tauPackage = cfg.package;}

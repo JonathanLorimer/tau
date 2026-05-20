@@ -112,6 +112,13 @@ pub struct Args {
     #[arg(long, value_name = "LIST", value_delimiter = ',')]
     inherit_env: Vec<String>,
 
+    /// Path of a bundled xdg-open to shadow with the tau shim inside the jail.
+    /// For npm packages (e.g. `open`) that call their bundled xdg-open by
+    /// absolute path rather than via $PATH. The path is canonicalized at
+    /// launch time, so symlinks into /nix/store are followed automatically.
+    #[arg(long, env = "TAU_XDG_SHIM_PATH", value_name = "PATH")]
+    xdg_shim_path: Option<PathBuf>,
+
     /// Skip the automatic `.mcp.json` allowlist seed. By default, before
     /// exec'ing pi the launcher scans the standard MCP config locations
     /// and persistently allowlists every https host referenced there — it's
@@ -266,6 +273,15 @@ pub fn run(args: Args) -> std::io::Result<()> {
     let tau_str = tau_bin.to_string_lossy().into_owned();
     cmd.args(["--dir", "/tau-shims"]);
     cmd.args(["--ro-bind", &tau_str, "/tau-shims/xdg-open"]);
+
+    // Shadow the bundled xdg-open if one was configured via --xdg-shim-path
+    // or TAU_XDG_SHIM_PATH. Canonicalized so symlinks into /nix/store follow
+    // version bumps without needing to update the configured path.
+    if let Some(shim_path) = &args.xdg_shim_path {
+        if let Ok(resolved) = shim_path.canonicalize() {
+            cmd.args(["--ro-bind", &tau_str, &*resolved.to_string_lossy()]);
+        }
+    }
 
     cmd.args(["--tmpfs", &home]); // fake $HOME backed by tmpfs; hides host dotfiles
 
