@@ -119,13 +119,12 @@ pub struct Args {
     #[arg(long, env = "TAU_XDG_SHIM_PATH", value_name = "PATH")]
     xdg_shim_path: Option<PathBuf>,
 
-    /// Skip the automatic `.mcp.json` allowlist seed. By default, before
-    /// exec'ing pi the launcher scans the standard MCP config locations
-    /// and persistently allowlists every https host referenced there — it's
-    /// the same logic as `tau ctl seed-mcp`, run silently unless there's
-    /// something to report.
+    /// Seed the allowlist from `.mcp.json` before launching. Scans the
+    /// standard MCP config locations and persistently allowlists every
+    /// https host found — the same logic as `tau ctl seed-mcp`, run
+    /// silently unless there's something to report.
     #[arg(long)]
-    no_seed_mcp: bool,
+    seed_mcp: bool,
 
     /// Arguments forwarded to pi.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -163,7 +162,7 @@ pub fn run(args: Args) -> std::io::Result<()> {
 
     let pi = which_pi()?;
 
-    if !args.no_seed_mcp {
+    if args.seed_mcp {
         seed_mcp(&project, &home);
     }
 
@@ -316,13 +315,11 @@ fn io_error(msg: impl Into<String>) -> std::io::Error {
     std::io::Error::other(msg.into())
 }
 
-/// Pre-exec allowlist seed from `.mcp.json` files.
+/// Allowlist seed from `.mcp.json` files, run when `--seed-mcp` is passed.
 ///
 /// Best-effort: failures (daemon down, malformed configs, etc.) print a
-/// warning and the launch proceeds. Aborting the jail because the convenience
-/// seed couldn't complete would be hostile — the extension's runtime prompt
-/// still catches anything we miss, and the user can re-run `tau ctl seed-mcp`
-/// manually once the daemon is healthy.
+/// warning and the launch proceeds. The extension's runtime prompt catches
+/// anything missed, and the user can run `tau ctl seed-mcp` directly.
 fn seed_mcp(project: &std::path::Path, home: &str) {
     let home_path = PathBuf::from(home);
     let paths = mcp_config::default_paths(project, &home_path);
