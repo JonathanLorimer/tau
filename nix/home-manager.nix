@@ -225,7 +225,10 @@ in {
     };
 
     systemd.user.services.tau = lib.mkIf cfg.enableService (
-      import ./systemd-unit.nix {tauPackage = cfg.package;}
+      import ./systemd-unit.nix {
+        tauPackage = cfg.package;
+        xdgUtils = pkgs.xdg-utils;
+      }
     );
   });
 }

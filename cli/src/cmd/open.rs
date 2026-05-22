@@ -22,7 +22,11 @@ pub fn run(args: Args) -> std::io::Result<()> {
 /// argv[1] is the URL, matching the xdg-open(1) interface.
 pub fn run_as_shim() -> std::io::Result<()> {
     let url = std::env::args().nth(1).unwrap_or_default();
-    send(&paths::default_socket(), &url)
+    if let Err(e) = send(&paths::default_socket(), &url) {
+        eprintln!("tau xdg-open: failed to send to daemon: {e}");
+        return Err(e);
+    }
+    Ok(())
 }
 
 fn send(socket: &std::path::Path, url: &str) -> std::io::Result<()> {

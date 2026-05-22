@@ -4,7 +4,10 @@
 # file home-manager-shaped (camelCase keys: Unit, Service, Install); if we
 # ever need a NixOS system-level equivalent, that gets its own file with
 # lowercase keys (description, restart, etc.).
-{tauPackage}: {
+{
+  tauPackage,
+  xdgUtils,
+}: {
   Unit = {
     Description = "tau firewall daemon (HTTPS CONNECT proxy + management socket)";
     # Wait for the graphical user session so the runtime dir (where we put
@@ -18,6 +21,7 @@
 
   Service = {
     ExecStart = "${tauPackage}/bin/tau serve";
+    Environment = "PATH=${xdgUtils}/bin";
     Restart = "on-failure";
     RestartSec = "2s";
 
