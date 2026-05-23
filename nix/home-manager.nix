@@ -228,6 +228,7 @@ in {
       import ./systemd-unit.nix {
         tauPackage = cfg.package;
         xdgUtils = pkgs.xdg-utils;
+        glib = pkgs.glib;
       }
     );
   });

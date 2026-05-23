@@ -7,6 +7,7 @@
 {
   tauPackage,
   xdgUtils,
+  glib,
 }: {
   Unit = {
     Description = "tau firewall daemon (HTTPS CONNECT proxy + management socket)";
@@ -21,7 +22,7 @@
 
   Service = {
     ExecStart = "${tauPackage}/bin/tau serve";
-    Environment = "PATH=${xdgUtils}/bin";
+    Environment = "PATH=${xdgUtils}/bin:${glib}/bin";
     Restart = "on-failure";
     RestartSec = "2s";
 
