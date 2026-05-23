@@ -208,11 +208,12 @@ async fn dispatch(cmd: Command, allowlist: &Arc<RwLock<Allowlist>>) -> Reply {
                 tracing::warn!("open_url rejected non-https url={url}");
                 return Reply::Simple { ok: false };
             }
+            // Always print the URL so it's visible even if xdg-open fails.
             tracing::info!("open_url url={url}");
             match tokio::process::Command::new("xdg-open").arg(&url).spawn() {
                 Ok(_) => Reply::Simple { ok: true },
                 Err(e) => {
-                    tracing::error!("open_url xdg-open failed: {e}");
+                    tracing::error!("open_url xdg-open failed ({e}) — open manually: {url}");
                     Reply::Simple { ok: false }
                 }
             }

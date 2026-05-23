@@ -22,7 +22,15 @@
 
   Service = {
     ExecStart = "${tauPackage}/bin/tau serve";
-    Environment = "PATH=${xdgUtils}/bin:${glib}/bin";
+    Environment = [
+      "PATH=${xdgUtils}/bin:${glib}/bin"
+      # On systemd+dbus-broker (NixOS default), the session bus socket is
+      # always at $XDG_RUNTIME_DIR/bus (%t expands to XDG_RUNTIME_DIR in
+      # unit specifiers). Setting this explicitly avoids relying on the
+      # variable being present in the user manager's environment, which can
+      # be absent on compositors like Sway that don't always import it.
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus"
+    ];
     Restart = "on-failure";
     RestartSec = "2s";
 
@@ -42,9 +50,9 @@
     #                EROFS because ProtectSystem=strict makes /run read-only
     #                in the service's mount namespace.
     ReadWritePaths = ["%h/.config/tau" "%t"];
-    # Pass display variables so xdg-open can open a browser when handling
-    # open_url commands routed from the jail's xdg-open shim.
-    PassEnvironment = "DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS";
+    # Pass display variables so xdg-open can find the compositor and open
+    # a browser via the XDG portal when handling open_url commands.
+    PassEnvironment = "DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP";
 
     RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
     RestrictNamespaces = true;
