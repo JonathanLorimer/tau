@@ -30,6 +30,11 @@
       # variable being present in the user manager's environment, which can
       # be absent on compositors like Sway that don't always import it.
       "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus"
+      # NixOS's xdg-open only routes through the XDG portal when this flag
+      # is set — without it, Sway is detected as a "generic" DE and
+      # xdg-open falls through to a by-name browser lookup that always
+      # fails in a minimal service environment.
+      "NIXOS_XDG_OPEN_USE_PORTAL=1"
     ];
     Restart = "on-failure";
     RestartSec = "2s";
@@ -50,8 +55,6 @@
     #                EROFS because ProtectSystem=strict makes /run read-only
     #                in the service's mount namespace.
     ReadWritePaths = ["%h/.config/tau" "%t"];
-    # Pass display variables so xdg-open can find the compositor and open
-    # a browser via the XDG portal when handling open_url commands.
     PassEnvironment = "DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP";
 
     RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
