@@ -256,13 +256,13 @@ pub fn run(args: Args) -> std::io::Result<()> {
         cmd.args(["--ro-bind-try", p, p]);
     }
 
-    // Expose /bin/sh inside the jail. Lots of bundled scripts in npm
-    // packages hard-code `#!/bin/sh`, and without this they fail to exec
-    // with a misleading ENOENT pointing at the script rather than the
-    // missing interpreter. On NixOS /bin/sh is a symlink into /nix/store
-    // (already bound RO), so this resolves correctly; -try keeps things
-    // working on systems that don't ship /bin/sh.
+    // Expose /bin/sh and sh-by-name inside the jail. Lots of bundled scripts
+    // in npm packages hard-code `#!/bin/sh`; others exec("sh") via PATH.
+    // We bind it at both /bin/sh (for shebang resolution) and /tau-shims/sh
+    // (for PATH lookup) rather than adding /bin to PATH, which would expose
+    // every binary in /bin on non-NixOS systems where /bin is populated.
     cmd.args(["--ro-bind-try", "/bin/sh", "/bin/sh"]);
+    cmd.args(["--ro-bind-try", "/bin/sh", "/tau-shims/sh"]);
 
     // Shim xdg-open so MCP OAuth browser launches route through the daemon
     // instead of requiring display access in the jail. tau detects argv[0]
