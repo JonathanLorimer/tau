@@ -68,7 +68,7 @@
           rust-analyzer
           rustfmt
 
-          nodejs_20
+          nodejs
           typescript-go
           pnpm
 

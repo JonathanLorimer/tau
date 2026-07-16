@@ -14,7 +14,7 @@
   # Override via `pkgs.callPackage ./pi.nix { toolDeps = [...]; }`.
   toolDeps ? [fd ripgrep],
 }: let
-  version = "0.74.0";
+  version = "0.80.7";
 
   # Upstream publishes bun-compiled standalone binaries as GitHub release
   # assets. No npm install / TypeScript build required — just a single binary
@@ -23,11 +23,11 @@
   sources = {
     "x86_64-linux" = {
       url = "https://github.com/earendil-works/pi-mono/releases/download/v${version}/pi-linux-x64.tar.gz";
-      hash = "sha256-1nZXow1JyfrKgIaNKkvbpN/KwEcCiT9FptFLJJNF640=";
+      hash = "sha256-xfWpp3o45o/LCJ3U41Bau2TJjRlZW1WBjJYb53mIlxk=";
     };
     "aarch64-linux" = {
       url = "https://github.com/earendil-works/pi-mono/releases/download/v${version}/pi-linux-arm64.tar.gz";
-      hash = "sha256-JhqpEoeMqYPJA9nEoECDEN2GN7WDCFZR2bXdtwyd9XI=";
+      hash = lib.fakeHash;
     };
     "x86_64-darwin" = {
       url = "https://github.com/earendil-works/pi-mono/releases/download/v${version}/pi-darwin-x64.tar.gz";
@@ -55,6 +55,8 @@ in
     nativeBuildInputs =
       [makeWrapper]
       ++ lib.optional stdenv.isLinux autoPatchelfHook;
+
+    buildInputs = lib.optional stdenv.isLinux stdenv.cc.cc.lib;
 
     dontConfigure = true;
     dontBuild = true;
