@@ -54,9 +54,9 @@ in
     # makeWrapper is used to inject `toolDeps` onto pi's `$PATH`.
     nativeBuildInputs =
       [makeWrapper]
-      ++ lib.optional stdenv.isLinux autoPatchelfHook;
+      ++ lib.optional stdenv.hostPlatform.isLinux autoPatchelfHook;
 
-    buildInputs = lib.optional stdenv.isLinux stdenv.cc.cc.lib;
+    buildInputs = lib.optional stdenv.hostPlatform.isLinux stdenv.cc.cc.lib;
 
     dontConfigure = true;
     dontBuild = true;
