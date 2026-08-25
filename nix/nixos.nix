@@ -70,12 +70,6 @@ in {
     # regardless of whether the user is inside a dev shell.
     environment.systemPackages = [pkgs.bubblewrap];
 
-    # Required for `bwrap --unshare-user --uid <jailUid>` to work without
-    # bwrap being setuid. On most modern kernels this is on by default,
-    # but hardened configs disable it — set it explicitly so the jail
-    # keeps working.
-    security.unprivilegedUsernsClone = true;
-
     # Enforcement is split across two tables. With `policy accept` on each
     # chain, only packets that match the explicit jail-UID rules are
     # touched — other users (root, you) are unaffected.
