@@ -23,14 +23,39 @@ in {
       description = "Whether to install the pi coding agent on PATH.";
     };
 
+    toolDeps = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = with pkgs; [fd ripgrep];
+      defaultText = lib.literalExpression "with pkgs; [ fd ripgrep ]";
+      description = ''
+        Extra runtime tools to put on pi's PATH. Threaded into a
+        `makeWrapper` rewrap of `cfg.pi`'s `bin/pi` — pi finds them by
+        canonical /nix/store path regardless of the launching shell's
+        environment, so the jail doesn't need to bind any host profile
+        dirs for them.
+
+        Pi's own flake build already bundles fd/ripgrep, so the default
+        here is mostly redundant; extend the list to make additional
+        tools (`git`, `jq`, …) reachable from inside the jail.
+      '';
+    };
+
     pi = lib.mkOption {
       type = lib.types.package;
-      default = tauPackages.pi;
-      defaultText = "tauPackages.pi";
+      default = pkgs.symlinkJoin {
+        name = "pi-wrapped";
+        paths = [tauPackages.pi];
+        nativeBuildInputs = [pkgs.makeWrapper];
+        postBuild = ''
+          wrapProgram $out/bin/pi --prefix PATH : ${lib.makeBinPath cfg.toolDeps}
+        '';
+        meta = tauPackages.pi.meta or {};
+      };
+      defaultText = "tauPackages.pi re-wrapped with cfg.toolDeps via makeWrapper";
       description = ''
-        The pi package to install when installPi = true. Pi's own flake
-        build bundles fd/ripgrep (and clipboard tools) on its PATH, so
-        no extra wrapping is needed for the jail to find them.
+        The pi package to install when installPi = true. By default the
+        flake's pi is rewrapped with `cfg.toolDeps` prefixed onto its
+        PATH; override entirely to bypass this wrapping.
       '';
     };
 
