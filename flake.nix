@@ -8,6 +8,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
+    pi.url = "github:earendil-works/pi";
   };
 
   outputs = {
@@ -15,6 +16,7 @@
     nixpkgs,
     rust-overlay,
     crane,
+    pi,
     ...
   }: let
     forAllSystems = function:
@@ -29,6 +31,7 @@
         });
   in {
     packages = forAllSystems ({
+      system,
       pkgs,
       rust,
       ...
@@ -41,7 +44,7 @@
     in {
       inherit tau;
       default = tau;
-      pi = pkgs.callPackage ./nix/pi.nix {};
+      pi = pi.packages.${system}.default;
       tau-extension = pkgs.callPackage ./nix/extension.nix {};
     });
 
@@ -69,7 +72,7 @@
           rustfmt
 
           nodejs
-          typescript-go
+          typescript
           pnpm
 
           bubblewrap
