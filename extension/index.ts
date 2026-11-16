@@ -13,19 +13,140 @@
  * single source of truth for what the agent's reaching.
  */
 
-import { connect } from "node:net";
+import { connect, Socket } from "node:net";
 import { join } from "node:path";
+import * as https from "node:https";
+import * as tls from "node:tls";
+import type * as http from "node:http";
+import type { Duplex } from "node:stream";
 import { Type } from "typebox";
-import { fetch, ProxyAgent } from "undici";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const PROXY_URL = "http://127.0.0.1:8118";
-const MARKER_HEADER = "x-pi-firewall-status"; // lowercased; fetch headers are case-insensitive
+const PROXY_HOST = "127.0.0.1";
+const PROXY_PORT = 8118;
+const MARKER_HEADER = "x-pi-firewall-status"; // lowercased; node http headers are case-insensitive
 const DEFAULT_PORT = 443;
 const MAX_RETRY_ATTEMPTS = 3;
 const EVENTS_RECONNECT_DELAY_MS = 2_000;
 const FETCH_TIMEOUT_MS = 10_000;
 const MGMT_TIMEOUT_MS = 5_000;
+
+// ---------------- CONNECT-tunnel https agent ----------------
+//
+// pi only aliases a fixed whitelist of host-provided imports (typebox,
+// @earendil-works/*) to its own node_modules; `undici` isn't on it, and
+// nix/extension.nix ships no deps of its own, so `undici` can't be
+// resolved at runtime (see incident: "Cannot find module 'undici'").
+// This reimplements just enough of undici's ProxyAgent — a CONNECT
+// tunnel to the local firewall proxy, upgraded to TLS on success — using
+// only node:net/tls/https, mirroring cli/src/proxy.rs's protocol: a 200
+// means tunnel-and-upgrade, any other status is the firewall's own deny
+// response (never real upstream bytes), so it's replayed through a fake
+// socket and parsed as the response by node's own HTTP client.
+class TauProxyAgent extends https.Agent {
+  override createConnection(
+    options: http.ClientRequestArgs,
+    callback?: (err: Error | null, stream: Duplex) => void,
+  ): undefined {
+    const cb = callback ?? (() => {});
+    const host = String(options.host);
+    const port = options.port ? Number(options.port) : DEFAULT_PORT;
+    const proxySocket = connect({ host: PROXY_HOST, port: PROXY_PORT });
+    proxySocket.once("error", (err) => cb(err, proxySocket));
+    proxySocket.once("connect", () => {
+      proxySocket.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
+    });
+
+    let buffers: Buffer[] = [];
+    let buffersLength = 0;
+    const read = () => {
+      const b = proxySocket.read();
+      if (b) ondata(b);
+      else proxySocket.once("readable", read);
+    };
+    const ondata = (b: Buffer) => {
+      buffers.push(b);
+      buffersLength += b.length;
+      const buffered = Buffer.concat(buffers, buffersLength);
+      const endOfHeaders = buffered.indexOf("\r\n\r\n");
+      if (endOfHeaders === -1) {
+        read();
+        return;
+      }
+      const statusLine = buffered.slice(0, endOfHeaders).toString("ascii").split("\r\n")[0] ?? "";
+      const statusCode = Number(statusLine.split(" ")[1]);
+
+      if (statusCode === 200) {
+        const tlsSocket = tls.connect({ socket: proxySocket, servername: host });
+        tlsSocket.once("secureConnect", () => cb(null, tlsSocket));
+        tlsSocket.once("error", (err) => cb(err, tlsSocket));
+      } else {
+        // Deny response from the firewall itself, not from any real
+        // upstream — replay the already-buffered bytes through a
+        // read-only fake socket so node's http client parses status/
+        // headers for us instead of us hand-rolling a second parser.
+        proxySocket.destroy();
+        const fake = new Socket({ writable: false });
+        (fake as unknown as { readable: boolean }).readable = true;
+        cb(null, fake);
+        fake.push(buffered);
+        fake.push(null);
+      }
+    };
+    read();
+    return undefined;
+  }
+}
+
+interface ProxyResponse {
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+}
+
+function wrapHeaders(headers: http.IncomingHttpHeaders): ProxyResponse["headers"] {
+  return {
+    get(name) {
+      const v = headers[name.toLowerCase()];
+      if (v === undefined) return null;
+      return Array.isArray(v) ? (v[0] ?? null) : v;
+    },
+  };
+}
+
+function proxyFetch(
+  url: string,
+  options: { method: string; signal?: AbortSignal },
+): Promise<ProxyResponse> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const requestOptions: https.RequestOptions = {
+      host: u.hostname,
+      port: u.port ? Number(u.port) : DEFAULT_PORT,
+      path: `${u.pathname}${u.search}`,
+      method: options.method,
+      agent: new TauProxyAgent({ keepAlive: false }),
+      signal: options.signal,
+    };
+    const req = https.request(
+      requestOptions,
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: wrapHeaders(res.headers),
+            text: async () => Buffer.concat(chunks).toString("utf-8"),
+          }),
+        );
+        res.once("error", reject);
+      },
+    );
+    req.once("error", reject);
+    req.end();
+  });
+}
 
 // ---------------- mgmt socket client ----------------
 
@@ -328,17 +449,13 @@ export default function (pi: ExtensionAPI) {
       const addedHosts = new Set<string>();
 
       for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
-        let response: Awaited<ReturnType<typeof fetch>>;
+        let response: ProxyResponse;
         try {
           // Combine the caller's abort signal with a hard timeout so a
           // slow/hung proxy or upstream doesn't stall the agent forever.
           const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
           const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-          response = await fetch(params.url, {
-            method,
-            dispatcher: new ProxyAgent(PROXY_URL),
-            signal: combinedSignal,
-          });
+          response = await proxyFetch(params.url, { method, signal: combinedSignal });
         } catch (err) {
           const error = err as Error;
           let text: string;
